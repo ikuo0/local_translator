@@ -100,7 +100,7 @@ def _cmd_summary(args) -> int:
 def _cmd_metrics(args) -> int:
     """Handle metrics command."""
     try:
-        state = summary.job.load(args.working_dir.resolve(), args.job_id)
+        state = summary.load_job_state(args.working_dir.resolve(), args.job_id)
         metrics = summary.calculate_page_metrics(state)
         
         if args.json:

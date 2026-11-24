@@ -137,7 +137,7 @@ def test_state_persistence():
         print("✓ Session 1: Saved state with SF001 completed")
 
         # Session 2 (new instance, same directory)
-        pipeline2 = SR1000Pipeline(working_dir=tmpdir, logger=logger)
+        pipeline2 = SR1000Pipeline(working_dir=tmpdir, logger=logger, job_id=pipeline1.job_id)
         loaded_state = pipeline2._load_page_state(page_id)
 
         assert loaded_state["status"] == "sf002"
@@ -165,9 +165,16 @@ def test_pipeline_structure():
             pipeline._load_page_state(page_id)
             pipeline._save_page_state(page_id, {})
 
-        # Check structure
-        assert (tmpdir / "states").is_dir()
-        state_files = list((tmpdir / "states").glob("*.json"))
+        assert pipeline.job_dir == tmpdir / pipeline.job_id
+        assert (pipeline.job_dir / "job.yaml").is_file()
+        assert pipeline._get_phase_dir("page_000001", "SF001_to_html") == (
+            pipeline.job_dir / "SF001_to_html" / "page_000001"
+        )
+        assert SR1000Pipeline(working_dir=tmpdir).job_id != pipeline.job_id
+
+        # Check structure under job_dir
+        assert (pipeline.job_dir / "states").is_dir()
+        state_files = list((pipeline.job_dir / "states").glob("*.json"))
         assert len(state_files) == 2
 
         print(f"✓ Working directory structure created")

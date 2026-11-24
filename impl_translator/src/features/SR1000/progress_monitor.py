@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from collections import defaultdict
 
+from impl_translator.src.libs import job
+
 
 def monitor_sr1000(working_dir: Path, follow: bool = True, filter_phase: str = None):
     """
@@ -22,12 +24,19 @@ def monitor_sr1000(working_dir: Path, follow: bool = True, filter_phase: str = N
         follow: tail -f のように追従するか
         filter_phase: 特定フェーズだけを表示（sf001, sf002, sf003, sf004）
     """
-    log_file = working_dir / "log.txt"
+    working_dir = Path(working_dir)
     
-    if not log_file.exists():
-        print(f"Log file not found: {log_file}", file=sys.stderr)
+    # Log file を探す（job/log.txt か log.txt）
+    log_file = None
+    if (working_dir / "job" / "log.txt").exists():
+        log_file = working_dir / "job" / "log.txt"
+    elif (working_dir / "log.txt").exists():
+        log_file = working_dir / "log.txt"
+    
+    if log_file is None:
+        print(f"Log file not found in {working_dir}", file=sys.stderr)
         return 1
-    
+
     # 表示フォーマット
     phase_names = {
         "sf001": "PDF→HTML",
@@ -137,9 +146,29 @@ def monitor_sr1000(working_dir: Path, follow: bool = True, filter_phase: str = N
 
 def show_page_summary(working_dir: Path):
     """ページ処理状態のサマリーを表示"""
-    states_dir = working_dir / "states"
+    working_dir = Path(working_dir)
+
+    if (working_dir / "job.yaml").is_file():
+        data = job.load(working_dir.parent, working_dir.name)["data"]
+        summary = data.get("summary")
+        if summary is not None:
+            print_page_summary(
+                summary["total"], summary["complete"], summary["error"],
+                summary["progress"], summary["pending"],
+            )
+            return
+
+    # Job directory を探す（job_id/states か states）
+    states_dir = None
+
+    # まず job_id/states を試す
+    if (working_dir / "job" / "states").exists():
+        states_dir = working_dir / "job" / "states"
+    # 後方互換性のため、直接 states も試す
+    elif (working_dir / "states").exists():
+        states_dir = working_dir / "states"
     
-    if not states_dir.exists():
+    if states_dir is None:
         print("No states directory found")
         return
     
@@ -165,8 +194,11 @@ def show_page_summary(working_dir: Path):
         except:
             pending += 1
     
-    total = completed + failed + pending + running
-    print(f"\nPage Summary:")
+    print_page_summary(completed + failed + pending + running, completed, failed, running, pending)
+
+
+def print_page_summary(total: int, completed: int, failed: int, running: int, pending: int):
+    print("\nPage Summary:")
     print(f"  Total:     {total}")
     print(f"  Completed: {completed} ✅")
     print(f"  Failed:    {failed} ❌")
@@ -178,18 +210,27 @@ def show_page_summary(working_dir: Path):
 def main():
     parser = argparse.ArgumentParser(description="Monitor SR1000 progress")
     parser.add_argument("--working-dir", type=Path, required=True, help="SR1000 working directory")
+    parser.add_argument("--job-id", help="Job ID under --working-dir")
     parser.add_argument("--follow", action="store_true", default=True, help="Follow log (default: True)")
     parser.add_argument("--no-follow", dest="follow", action="store_false", help="Don't follow log")
     parser.add_argument("--filter", choices=["sf001", "sf002", "sf003", "sf004"], help="Filter by phase")
     parser.add_argument("--summary", action="store_true", help="Show page summary and exit")
     
     args = parser.parse_args()
-    
+    working_dir = args.working_dir
+    if args.job_id is not None:
+        try:
+            working_dir = job.job_directory(working_dir, args.job_id)
+        except ValueError as error:
+            parser.error(str(error))
+        if not working_dir.is_dir():
+            parser.error(f"Job does not exist: {args.job_id}")
+
     if args.summary:
-        show_page_summary(args.working_dir)
+        show_page_summary(working_dir)
         return 0
-    
-    return monitor_sr1000(args.working_dir, follow=args.follow, filter_phase=args.filter)
+
+    return monitor_sr1000(working_dir, follow=args.follow, filter_phase=args.filter)
 
 
 if __name__ == "__main__":

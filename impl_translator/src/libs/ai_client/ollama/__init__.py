@@ -1,9 +1,13 @@
 """Ollama API client - main implementation."""
 
 import json
+import logging
 from typing import Optional
 
 import requests
+
+
+logger = logging.getLogger("SR1000.ollama")
 
 
 class OllamaClient:
@@ -13,7 +17,7 @@ class OllamaClient:
         self,
         host: str = "http://localhost:11434",
         model: str = "qwen3:8b",
-        timeout: int = 300,
+        timeout: int = 600,
     ):
         """
         Initialize Ollama client.
@@ -21,7 +25,7 @@ class OllamaClient:
         Args:
             host: Ollama server URL (default: http://localhost:11434)
             model: Model name (default: qwen3:8b)
-            timeout: Request timeout in seconds (default: 300)
+            timeout: Connection and read timeout in seconds (default: 600)
         """
         self.host = host.rstrip("/")
         self.model = model
@@ -35,6 +39,8 @@ class OllamaClient:
         temperature: float = 0.7,
         keep_alive: str = "5m",
         stream: bool = False,
+        think: Optional[bool] = None,
+        log_cache_metrics: bool = False,
     ) -> str:
         """
         Generate text using Ollama.
@@ -45,6 +51,8 @@ class OllamaClient:
             temperature: Temperature for generation (0.0-2.0)
             keep_alive: How long to keep model loaded (e.g., "5m", "1h")
             stream: Whether to stream response (default: False)
+            think: Whether to enable thinking (None uses the model default)
+            log_cache_metrics: Log cache metrics for a nonstreaming diagnostic request
 
         Returns:
             Generated text response
@@ -67,6 +75,9 @@ class OllamaClient:
         if system:
             payload["system"] = system
 
+        if think is not None:
+            payload["think"] = think
+
         if keep_alive:
             payload["keep_alive"] = keep_alive
 
@@ -88,6 +99,18 @@ class OllamaClient:
             return full_response
         else:
             data = response.json()
+            if log_cache_metrics:
+                cached_tokens = data.get("prompt_eval_cached_count")
+                if type(cached_tokens) is not int or cached_tokens < 0:
+                    cache_status = "unknown"
+                else:
+                    cache_status = "not_used" if cached_tokens == 0 else "used"
+                logger.info(
+                    "Ollama /api/generate model=%s keep_alive=%s prompt_eval_cached_count=%s "
+                    "prompt_eval_count=%s cache=%s",
+                    self.model, keep_alive, cached_tokens,
+                    data.get("prompt_eval_count"), cache_status,
+                )
             if "response" not in data:
                 raise ValueError("Invalid response: missing 'response' field")
             return data["response"]

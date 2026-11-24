@@ -4,6 +4,8 @@ import os
 from flask import Blueprint, send_from_directory, jsonify
 from pathlib import Path
 
+from impl_translator.src.features.SR1001 import summary
+
 bp = Blueprint("sr1001", __name__, url_prefix="/sr1001")
 
 
@@ -28,33 +30,33 @@ def index():
 @bp.route("/api/job/<job_id>")
 def get_job_status(job_id: str):
     """Get job status as JSON."""
-    from impl_translator.src.libs import job
     
     working_dir = get_working_dir()
     try:
         # Load job state without lock (read-only, safe while job is running)
-        state = job.load(working_dir, job_id)
-        
+        state = summary.load_job_state(working_dir, job_id, include_timings=False)
         data = state["data"]
-        pages = data.get("pages", {})
-        
-        completed = sum(1 for p in pages.values() if p.get("status") == "completed")
-        failed = sum(1 for p in pages.values() if p.get("status") == "failed")
-        interrupted = sum(1 for p in pages.values() if p.get("status") == "interrupted")
-        running = sum(1 for p in pages.values() if p.get("status") == "running")
-        
-        total = data.get("page_count", 0)
-        progress_percent = round(100 * completed / total, 1) if total > 0 else 0
-        
+        metrics = summary.calculate_summary(state)
+        status = data.get("status")
+        if status is None:
+            if metrics.running_pages:
+                status = "running"
+            elif metrics.pending_pages:
+                status = "pending"
+            elif metrics.failed_pages or metrics.interrupted_pages:
+                status = "failed"
+            elif metrics.total_pages:
+                status = "completed"
+
         return jsonify({
             "job_id": job_id,
-            "status": data.get("status"),
-            "total_pages": total,
-            "completed": completed,
-            "failed": failed,
-            "interrupted": interrupted,
-            "running": running,
-            "progress_percent": progress_percent,
+            "status": status,
+            "total_pages": metrics.total_pages,
+            "completed": metrics.completed_pages,
+            "failed": metrics.failed_pages,
+            "interrupted": metrics.interrupted_pages,
+            "running": metrics.running_pages,
+            "progress_percent": metrics.progress_percent,
             "created_at": state.get("created_at"),
             "updated_at": state.get("updated_at"),
             "elapsed_seconds": data.get("elapsed_seconds", 0),
@@ -71,12 +73,11 @@ def get_job_status(job_id: str):
 @bp.route("/api/job/<job_id>/pages")
 def get_job_pages(job_id: str):
     """Get detailed page status."""
-    from impl_translator.src.libs import job
     
     working_dir = get_working_dir()
     try:
         # Load job state without lock (read-only, safe while job is running)
-        state = job.load(working_dir, job_id)
+        state = summary.load_job_state(working_dir, job_id, include_timings=False)
         
         pages = state["data"].get("pages", {})
         return jsonify({
@@ -94,13 +95,11 @@ def get_job_pages(job_id: str):
 @bp.route("/api/job/<job_id>/summary")
 def get_job_summary(job_id: str):
     """Get job summary statistics."""
-    from impl_translator.src.features.SR1001 import summary
-    from impl_translator.src.libs import job
     
     working_dir = get_working_dir()
     try:
         # Load job state without lock (read-only, safe while job is running)
-        state = job.load(working_dir, job_id)
+        state = summary.load_job_state(working_dir, job_id)
         
         metrics = summary.calculate_summary(state)
         return jsonify({
@@ -118,14 +117,12 @@ def get_job_summary(job_id: str):
 @bp.route("/api/job/<job_id>/metrics")
 def get_job_metrics(job_id: str):
     """Get page-by-page metrics."""
-    from impl_translator.src.features.SR1001 import summary
-    from impl_translator.src.libs import job
     from dataclasses import asdict
     
     working_dir = get_working_dir()
     try:
         # Load job state without lock (read-only, safe while job is running)
-        state = job.load(working_dir, job_id)
+        state = summary.load_job_state(working_dir, job_id)
         
         metrics = summary.calculate_page_metrics(state)
         return jsonify({

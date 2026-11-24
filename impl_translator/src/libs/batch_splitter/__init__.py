@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from impl_translator.src.libs.translation_lines import normalize_id, parse_translation_line
+
 
 def split_text_into_batches(input_text: Path, max_chars: int = 1500) -> list[dict]:
     """
@@ -13,7 +15,7 @@ def split_text_into_batches(input_text: Path, max_chars: int = 1500) -> list[dic
     - Single line exceeding max_chars is kept as a single batch
 
     Args:
-        input_text: Path to text file with lines in format: {ID=tag_XXXXXX} {text}
+        input_text: Path to text file with lines in format: idXXXXXX {text}
         max_chars: Maximum characters per batch (default: 1500)
 
     Returns:
@@ -22,8 +24,8 @@ def split_text_into_batches(input_text: Path, max_chars: int = 1500) -> list[dic
             {
                 "batch_id": 0,
                 "lines": [
-                    {"id": "tag_000000", "text": "..."},
-                    {"id": "tag_000001", "text": "..."}
+                    {"id": "id000000", "text": "..."},
+                    {"id": "id000001", "text": "..."}
                 ],
                 "char_count": 1234
             },
@@ -48,17 +50,10 @@ def split_text_into_batches(input_text: Path, max_chars: int = 1500) -> list[dic
         if not line.strip():
             continue
 
-        # Format: {ID=tag_XXXXXX} {text}
-        if not line.startswith("{ID="):
+        parsed = parse_translation_line(line)
+        if parsed is None:
             raise ValueError(f"Invalid line format: {line}")
-
-        # Extract ID and text
-        end_id_pos = line.find("}")
-        if end_id_pos == -1:
-            raise ValueError(f"Invalid line format: {line}")
-
-        tag_id = line[4:end_id_pos]  # Extract from {ID= to }
-        text = line[end_id_pos + 2:] if end_id_pos + 2 < len(line) else ""  # Skip "} "
+        tag_id, text = parsed
 
         parsed_lines.append({
             "id": tag_id,
@@ -117,6 +112,6 @@ def format_batch_for_translation(batch: dict) -> str:
     """
     lines = []
     for line_data in batch["lines"]:
-        lines.append(f"{{ID={line_data['id']}}} {line_data['text']}")
+        lines.append(f"{normalize_id(line_data['id'])} {line_data['text']}")
 
     return "\n".join(lines)

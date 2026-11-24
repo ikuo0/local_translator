@@ -55,7 +55,7 @@ def preprocess_html(input_html: Path, output_html: Path) -> Path:
     for tag in soup.find_all(True):  # True means find all tags
         # Skip tags without a name (e.g., NavigableString)
         if tag.name:
-            tag["id"] = f"tag_{tag_id_counter:06d}"
+            tag["id"] = f"id{tag_id_counter:06d}"
             tag_id_counter += 1
 
     # Write output

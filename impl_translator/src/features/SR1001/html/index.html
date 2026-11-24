@@ -499,9 +499,7 @@
                 const pagesGrid = document.getElementById('pagesGrid');
                 pagesGrid.innerHTML = '';
                 
-                for (let i = 1; i <= Object.keys(data.pages).length; i++) {
-                    const page = data.pages[i.toString()];
-                    if (!page) continue;
+                for (const [i, page] of Object.entries(data.pages)) {
                     
                     const cell = document.createElement('div');
                     cell.className = `page-cell ${page.status}`;

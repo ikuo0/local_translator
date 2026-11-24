@@ -5,6 +5,9 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
+from impl_translator.src.libs.html_text_extractor import direct_text_nodes, iter_translatable_tags
+from impl_translator.src.libs.translation_lines import normalize_id, parse_translation_line
+
 
 def restore_translations_to_html(
     input_html: Path,
@@ -17,7 +20,7 @@ def restore_translations_to_html(
     Args:
         input_html: Path to preprocessed HTML file (with IDs)
         translations_json: Path to JSON file with translations
-                          Format: {"tag_000000": "翻訳済みテキスト", ...}
+                          Format: {"id000000": "翻訳済みテキスト", ...}
         output_html: Path to output HTML file
 
     Returns:
@@ -45,18 +48,20 @@ def restore_translations_to_html(
 
     # Load translations
     with open(translations_json, "r", encoding="utf-8") as f:
-        translations = json.load(f)
+        data = json.load(f)
+    translations = data.get("translations", data)
 
-    # Restore translations
-    for tag in soup.find_all(True):
-        if tag.name and tag.get("id"):
-            tag_id = tag.get("id")
-
-            if tag_id in translations:
-                translated_text = translations[tag_id]
-                # Clear existing content and set translated text
-                tag.clear()
-                tag.string = translated_text
+    for tag in iter_translatable_tags(soup):
+        tag_id = tag["id"]
+        translated_text = translations.get(tag_id, translations.get(normalize_id(tag_id)))
+        nodes = direct_text_nodes(tag)
+        if translated_text is not None and nodes:
+            first, *remaining = nodes
+            leading = first[:len(first) - len(first.lstrip())]
+            trailing = first[len(first.rstrip()):]
+            first.replace_with(f"{leading}{translated_text}{trailing}")
+            for node in remaining:
+                node.extract()
 
     # Write output
     output_html.write_text(str(soup), encoding="utf-8")
@@ -66,13 +71,13 @@ def restore_translations_to_html(
 
 def load_translations_from_text(text_content: str) -> dict:
     """
-    Parse translated text in format: {ID=tag_XXXXXX} {text}
+    Parse translated text in format: idXXXXXX {text}
 
     Args:
-        text_content: Text content with format {ID=...} {translated text}
+        text_content: Text content with format id000006 followed by translated text
 
     Returns:
-        Dict: {"tag_000000": "翻訳済みテキスト", ...}
+        Dict: {"id000000": "翻訳済みテキスト", ...}
 
     Raises:
         ValueError: If format is invalid
@@ -83,16 +88,10 @@ def load_translations_from_text(text_content: str) -> dict:
         if not line.strip():
             continue
 
-        if not line.startswith("{ID="):
+        parsed = parse_translation_line(line)
+        if parsed is None:
             raise ValueError(f"Invalid translation format: {line}")
-
-        # Extract ID and text
-        end_id_pos = line.find("}")
-        if end_id_pos == -1:
-            raise ValueError(f"Invalid translation format: {line}")
-
-        tag_id = line[4:end_id_pos]
-        text = line[end_id_pos + 2:] if end_id_pos + 2 < len(line) else ""
+        tag_id, text = parsed
 
         translations[tag_id] = text
 

@@ -7,10 +7,9 @@ import json
 import tempfile
 from pathlib import Path
 
-from impl_translator.src.libs.sf_003_translate import (
+from impl_translator.src.libs.translation_formatter import (
     format_batch_for_prompt,
     parse_translation_response,
-    translate_batches,
 )
 
 
@@ -23,9 +22,9 @@ def test_format_batch_for_prompt():
     batch = {
         "batch_id": 0,
         "lines": [
-            {"id": "tag_000000", "text": "Hello world"},
-            {"id": "tag_000001", "text": "This is a test\nwith newline"},
-            {"id": "tag_000002", "text": "Another text"},
+            {"id": "id000000", "text": "Hello world"},
+            {"id": "id000001", "text": "This is a test\nwith newline"},
+            {"id": "id000002", "text": "Another text"},
         ],
         "char_count": 65,
     }
@@ -40,8 +39,8 @@ def test_format_batch_for_prompt():
     # Verify format
     lines = prompt.split("\n")
     assert len(lines) == 3, f"Expected 3 lines, got {len(lines)}"
-    assert lines[0].startswith("{ID=tag_000000}"), "Line 0 format error"
-    assert lines[1].startswith("{ID=tag_000001}"), "Line 1 format error"
+    assert lines[0].startswith("id000000"), "Line 0 format error"
+    assert lines[1].startswith("id000001"), "Line 1 format error"
     assert "<br>" in lines[1], "Newline not converted to <br>"
     print("✓ Format test passed\n")
 
@@ -52,9 +51,9 @@ def test_parse_translation_response():
     print("TEST 2: Parse translation response")
     print("=" * 60)
 
-    response_text = """{ID=tag_000000} こんにちは世界
-{ID=tag_000001} これはテストです<br>改行を含む
-{ID=tag_000002} 別のテキスト"""
+    response_text = """id000000 こんにちは世界
+id000001 これはテストです<br>改行を含む
+id000002 別のテキスト"""
 
     translations = parse_translation_response(response_text)
     print("Input response:")
@@ -65,8 +64,8 @@ def test_parse_translation_response():
 
     # Verify parsing
     assert len(translations) == 3, f"Expected 3 translations, got {len(translations)}"
-    assert translations["tag_000000"] == "こんにちは世界"
-    assert "<br>" in translations["tag_000001"]
+    assert translations["id000000"] == "こんにちは世界"
+    assert "<br>" in translations["id000001"]
     print("✓ Parsing test passed\n")
 
 
@@ -85,15 +84,15 @@ def test_translate_batches_mock():
             {
                 "batch_id": 0,
                 "lines": [
-                    {"id": "tag_000000", "text": "Hello"},
-                    {"id": "tag_000001", "text": "World"},
+                    {"id": "id000000", "text": "Hello"},
+                    {"id": "id000001", "text": "World"},
                 ],
                 "char_count": 10,
             },
             {
                 "batch_id": 1,
                 "lines": [
-                    {"id": "tag_000002", "text": "This is a test"},
+                    {"id": "id000002", "text": "This is a test"},
                 ],
                 "char_count": 14,
             },
@@ -124,8 +123,8 @@ def test_full_pipeline_format():
     batch = {
         "batch_id": 0,
         "lines": [
-            {"id": "tag_000000", "text": "The surface consists of multiple polygons"},
-            {"id": "tag_000001", "text": "Each polygon has a unique identifier"},
+            {"id": "id000000", "text": "The surface consists of multiple polygons"},
+            {"id": "id000001", "text": "Each polygon has a unique identifier"},
         ],
         "char_count": 85,
     }
@@ -141,8 +140,8 @@ def test_full_pipeline_format():
     print()
 
     # Simulate Ollama response
-    response = """{ID=tag_000000} 表面は複数のポリゴンで構成されています
-{ID=tag_000001} 各ポリゴンは一意の識別子を持っています"""
+    response = """id000000 表面は複数のポリゴンで構成されています
+id000001 各ポリゴンは一意の識別子を持っています"""
 
     print("Step 3: Simulated Ollama response")
     print(response)
@@ -184,7 +183,7 @@ if __name__ == "__main__":
     print()
     print("Note: To test with actual Ollama translation, run:")
     print(
-        "  python -m impl_translator.src.libs.sf_003_translate \\"
+        "  python -m impl_translator.src.libs.translation_formatter \\"
     )
     print("    --input batches.json --output translations.json \\"
     )

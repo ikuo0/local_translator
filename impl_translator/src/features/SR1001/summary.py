@@ -1,8 +1,10 @@
 """Job summary statistics and metrics calculation."""
 
+import json
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
-from statistics import mean, StatisticsError
+from statistics import mean
 from typing import Any
 
 from impl_translator.src.libs import job
@@ -50,13 +52,78 @@ class SummaryMetrics:
     
     # Overall progress
     progress_percent: float
+    timed_completed_pages: int = 0
+    job_elapsed_seconds: float | None = None
 
 
-def _calculate_ratio(output: int | None, input_val: int) -> float | None:
-    """Calculate output/input ratio safely."""
-    if output is None or input_val == 0:
+CURRENT_PAGE_STATUS = {
+    "complete": "completed",
+    "error": "failed",
+    "progress": "running",
+}
+PHASES = ("SF001_to_html", "SF002_preproc", "SF003_translate", "SF004_restore")
+
+
+def elapsed_between(start: str | None, end: str | None) -> float | None:
+    if not start or not end:
         return None
-    return output / input_val
+    try:
+        seconds = (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds()
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds >= 0 else None
+
+
+def page_status(page_info: dict[str, Any]) -> str:
+    status = page_info.get("status", "pending")
+    if status == "error" and page_info.get("error") == "Interrupted":
+        return "interrupted"
+    return CURRENT_PAGE_STATUS.get(status, status)
+
+
+def read_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
+        # SR1000 can be writing the file while the dashboard polls.
+        return {}
+
+
+def load_job_state(
+    working_dir: Path, job_id: str, *, include_timings: bool = True,
+) -> dict[str, Any]:
+    """Read current SR1000 output and expose the legacy metrics fields."""
+    state = job.load(working_dir, job_id)
+    data = state["data"]
+    selection = data.get("selection")
+    if selection is None:
+        return state
+
+    data["page_count"] = selection["selected_page_count"]
+    directory = job.job_directory(working_dir, job_id)
+    data.setdefault("log_file", str(directory / "log.txt"))
+    data["elapsed_seconds"] = elapsed_between(state.get("created_at"), state.get("updated_at"))
+    metadata = None
+    for number, page in data["pages"].items():
+        page["status"] = page_status(page)
+        if not include_timings or page["status"] != "completed":
+            continue
+        page_id = f"page_{int(number):06d}"
+        saved = read_json(directory / "states" / f"{page_id}.json")
+        steps = saved.get("steps", {})
+        elapsed = elapsed_between(
+            steps.get("sf001", {}).get("stats", {}).get("started_at"),
+            steps.get("sf004", {}).get("stats", {}).get("finished_at"),
+        )
+        if elapsed is None:
+            if metadata is None:
+                metadata = read_json(directory / "metadata.json")
+            phases = metadata.get(page_id, {}).get("phases", {})
+            durations = [phases.get(phase, {}).get("duration_sec") for phase in PHASES]
+            if all(isinstance(duration, (int, float)) for duration in durations):
+                elapsed = sum(durations)
+        page["elapsed_seconds"] = elapsed
+    return state
 
 
 def calculate_summary(state: dict[str, Any]) -> SummaryMetrics:
@@ -70,7 +137,7 @@ def calculate_summary(state: dict[str, Any]) -> SummaryMetrics:
     """
     data = state.get("data", {})
     pages = data.get("pages", {})
-    total_pages = data.get("page_count", len(pages))
+    total_pages = data.get("selection", {}).get("selected_page_count", data.get("page_count", len(pages)))
     
     # Count statuses
     completed_pages = []
@@ -80,7 +147,7 @@ def calculate_summary(state: dict[str, Any]) -> SummaryMetrics:
     pending_pages = 0
     
     for page_info in pages.values():
-        status = page_info.get("status", "pending")
+        status = page_status(page_info)
         if status == "completed":
             completed_pages.append(page_info)
         elif status == "failed":
@@ -150,6 +217,8 @@ def calculate_summary(state: dict[str, Any]) -> SummaryMetrics:
         total_output_characters=total_output,
         avg_compression_ratio=avg_compression,
         progress_percent=progress_percent,
+        timed_completed_pages=len(elapsed_times),
+        job_elapsed_seconds=data.get("elapsed_seconds"),
     )
 
 
@@ -168,7 +237,7 @@ def calculate_page_metrics(state: dict[str, Any]) -> list[PageMetrics]:
     for page_num_str, page_info in sorted(pages.items(), key=lambda x: int(x[0])):
         metrics.append(PageMetrics(
             page_number=int(page_num_str),
-            status=page_info.get("status", "unknown"),
+            status=page_status(page_info),
             input_characters=page_info.get("input_characters"),
             output_characters=page_info.get("output_characters"),
             elapsed_seconds=page_info.get("elapsed_seconds"),
@@ -202,16 +271,19 @@ def format_summary(summary: SummaryMetrics) -> str:
         "",
     ]
     
+    if summary.job_elapsed_seconds is not None:
+        lines.extend([f"Job elapsed: {summary.job_elapsed_seconds:.2f} sec", ""])
+
     if summary.completed_pages > 0:
         lines.extend([
-            "Timing Statistics (Completed Pages):",
+            f"Timing Statistics (Completed Pages, {summary.timed_completed_pages} timed):",
         ])
         if summary.avg_elapsed_seconds is not None:
             lines.extend([
                 f"  Average:    {summary.avg_elapsed_seconds:8.2f} sec",
                 f"  Min:        {summary.min_elapsed_seconds:8.2f} sec",
                 f"  Max:        {summary.max_elapsed_seconds:8.2f} sec",
-                f"  Total:      {summary.total_elapsed_seconds:8.2f} sec",
+                f"  Page time sum: {summary.total_elapsed_seconds:8.2f} sec",
             ])
         
         lines.extend([""])
@@ -259,7 +331,7 @@ def format_summary_json(summary: SummaryMetrics) -> dict[str, Any]:
     data = asdict(summary)
     # Convert float values to round to 2 decimal places for readability
     for key in list(data.keys()):
-        if key.startswith("avg_") or key.startswith("total_") or key == "progress_percent":
+        if key.startswith("avg_") or key.startswith("total_") or key in {"progress_percent", "job_elapsed_seconds"}:
             if isinstance(data[key], float):
                 data[key] = round(data[key], 2)
         elif key.startswith("min_") or key.startswith("max_"):
@@ -278,6 +350,6 @@ def load_and_summarize(working_dir: Path, job_id: str) -> tuple[dict[str, Any], 
     Returns:
         Tuple of (job_state, summary_metrics)
     """
-    state = job.load(working_dir, job_id)
+    state = load_job_state(working_dir, job_id)
     summary = calculate_summary(state)
     return state, summary

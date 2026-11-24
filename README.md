@@ -29,38 +29,39 @@ SR1000 は以下の 6 つの libs モジュールを統合した、PDF から日
 
 libs 統合版は、タグ単位での正確な翻訳と改行処理を実現し、より高精度な結果が期待できます。
 
-**基本コマンド:**
+**新規実行**
+
+```bash
+python -m impl_translator.src.features.SR1000.sr1000_main \
+  --input-pdf input.pdf \
+  --working-dir ./work
+```
+
+開始時に表示されるジョブ ID を控えてください。SF001〜SF004、ページ状態、既定のログとメタデータは `./work/<job_id>/` に保存されます。
+
+`--parallel-count 4` を指定すると、最大4ページを同時に処理します。
+Ollama に送る翻訳はジョブ内で直列に実行します。既定値は `1` です。
+
+`--system-prompt "ODB++、ガーバーデータ関連の翻訳です"` を追加すると、
+指定した文が各翻訳リクエストのシステムプロンプトに入ります。
+再開時に省略すると、ジョブに保存された文が使われます。
+
+**再開**
+
 ```bash
 python -m impl_translator.src.features.SR1000.sr1000_main \
   --input-pdf input.pdf \
   --working-dir ./work \
-  --log-file ./work/log.txt
+  --resume --job-id "$JOB_ID"
 ```
 
-**全オプション:**
-```bash
-python -m impl_translator.src.features.SR1000.sr1000_main \
-  --input-pdf input.pdf \
-  --working-dir ./work \
-  --log-file ./work/log.txt \
-  --ollama-host http://localhost:11434 \
-  --ollama-model qwen3:8b \
-  --temperature 0.3 \
-  --resume
-```
-
-**オプション説明:**
-- `--input-pdf` (必須): 入力 PDF ファイルパス
-- `--working-dir` (必須): 中間ファイルと状態を保存するディレクトリ
-- `--log-file` (必須): ログファイルパス
-- `--ollama-host`: Ollama のホスト URL（デフォルト: http://localhost:11434）
-- `--ollama-model`: 使用するモデル（デフォルト: qwen3:8b）
-- `--temperature`: 翻訳の創意性（デフォルト: 0.3）
-- `--resume`: 前回の進捗から再開
+`JOB_ID` には開始時に表示された値を設定してください。再開時にページ範囲を省略すると、`job.yaml` に保存された範囲を使います。`--log-file` と `--metadata-file` で出力先を明示的に指定できます。
 
 ## 進捗管理
 
-各ページの処理状態は `working_dir/states/page_XXXXXX.json` に保存されます。
+ジョブの `job.yaml` は実行中に更新されます。`data.selection` に PDF 全体のページ数、対象範囲、対象ページ数を記録します。`data.pages` は1始まりのページ番号をキーに持ち、各ページの `status` は `pending`（未着手）、`progress`（処理中）、`error`（失敗・中断）、`complete`（完了）のいずれかです。`data.summary` は対象ページ全体の件数を状態別に記録します。
+
+各ページの処理状態は `working_dir/job_id/states/page_XXXXXX.json` に保存されます。
 
 ```json
 {
@@ -80,7 +81,7 @@ python -m impl_translator.src.features.SR1000.sr1000_main \
 - `completed`: 完了
 - `failed`: 処理失敗
 
-中断後、`--resume` オプションで再開すると、完了済みページはスキップされ、未完了・失敗ページのみ再処理されます。
+`--resume` はページごとの状態 JSON を読み、ページ全体が `completed` ならスキップします。未完了・失敗・状態ファイルがないページは SF001 から再実行します。
 
 ## パフォーマンス考慮事項
 
@@ -107,16 +108,31 @@ SR1000 では以下のポイントに注意してください：
 
 ## ジョブ状態の確認
 
+SR1001 の集計は、進行中のジョブにも使えます。
+
+```bash
+python -m impl_translator.src.features.SR1001.batch summary \
+  --working-dir ./work --job-id "$JOB_ID"
+```
+
+`--json` で JSON を出力できます。`summary` を `metrics` に置き換えるとページ別の値を表示します。ページの平均・最小・最大・合計は計測値のある完了済みページが対象です。ジョブ経過時間は作成から最終更新までの時間で、中断していた時間も含みます。並列実行ではページ時間の合計とジョブ経過時間は異なります。
+
+`sr1000_main` に `--debug-ollama-cache` を追加すると、翻訳前に
+`Hello` を `keep_alive: "0"` で送信し、応答の `prompt_eval_cached_count` と
+`prompt_eval_count` をジョブログに記録します。
+`cache=not_used` はキャッシュ件数が 0、`cache=used` は 1 以上、
+`cache=unknown` は Ollama が有効な件数を返さなかったことを示します。
+
 進捗状況は ログファイルで確認できます：
 
 ```bash
-tail -f ./work/log.txt
+tail -f "./work/$JOB_ID/log.txt"
 ```
 
 ページ処理の詳細な状態は状態ファイルで確認：
 
 ```bash
-cat ./work/states/page_000001.json
+cat "./work/$JOB_ID/states/page_000001.json"
 ```
 
 **進捗監視スクリプト（リアルタイム表示）:**
@@ -126,16 +142,16 @@ cat ./work/states/page_000001.json
 ```bash
 # リアルタイム進捗表示（全フェーズ）
 python -m impl_translator.src.features.SR1000.progress_monitor \
-  --working-dir ./work
+  --working-dir ./work --job-id "$JOB_ID"
 
 # SF003（翻訳）フェーズのみフィルタ
 python -m impl_translator.src.features.SR1000.progress_monitor \
-  --working-dir ./work \
+  --working-dir ./work --job-id "$JOB_ID" \
   --filter sf003
 
 # ページ処理状態のサマリー表示
 python -m impl_translator.src.features.SR1000.progress_monitor \
-  --working-dir ./work \
+  --working-dir ./work --job-id "$JOB_ID" \
   --summary
 ```
 
@@ -347,10 +363,10 @@ python -m impl_translator.src.libs.html_preproc \
 
 **出力例:**
 ```html
-<html id="tag_000000">
-<head id="tag_000001">...</head>
-<body id="tag_000002">
-<p id="tag_000003">This is bold and span text.</p>
+<html id="id000000">
+<head id="id000001">...</head>
+<body id="id000002">
+<p id="id000003">This is bold and span text.</p>
 </body>
 </html>
 ```
@@ -494,9 +510,9 @@ python -m impl_translator.src.libs.html_text_extractor \
 
 **出力フォーマット:**
 ```
-{ID=tag_000000} {タグ内のテキスト全て}
-{ID=tag_000001} {タグ内のテキスト全て}
-{ID=tag_000002} {タグ内のテキスト全て}
+id000000 タグ内のテキスト全て
+id000001 タグ内のテキスト全て
+id000002 タグ内のテキスト全て
 ```
 
 **Python コード:**
@@ -527,8 +543,8 @@ python -m impl_translator.src.libs.batch_splitter \
   {
     "batch_id": 0,
     "lines": [
-      {"id": "tag_000000", "text": "..."},
-      {"id": "tag_000001", "text": "..."}
+      {"id": "id000000", "text": "..."},
+      {"id": "id000001", "text": "..."}
     ],
     "char_count": 1234
   },
@@ -558,8 +574,8 @@ for batch in batches:
   {
     "batch_id": 0,
     "lines": [
-      {"id": "tag_000000", "text": "Hello world"},
-      {"id": "tag_000001", "text": "This is a test\nwith newline"}
+      {"id": "id000000", "text": "Hello world"},
+      {"id": "id000001", "text": "This is a test\nwith newline"}
     ],
     "char_count": 35
   }
@@ -569,8 +585,8 @@ for batch in batches:
 **処理の流れ:**
 1. バッチを Ollama API 送信用フォーマットに変換
    ```
-   {ID=tag_000000} Hello world
-   {ID=tag_000001} This is a test<br>with newline
+   id000000 Hello world
+   id000001 This is a test<br>with newline
    ```
 2. Ollama で翻訳実行
 3. 応答を解析し ID -> 翻訳テキストのマッピングを作成
@@ -591,8 +607,8 @@ python -m impl_translator.src.libs.translation_formatter \
 {
   "total_batches": 1,
   "translations": {
-    "tag_000000": "こんにちは世界",
-    "tag_000001": "これはテストです<br>改行を含む"
+    "id000000": "こんにちは世界",
+    "id000001": "これはテストです<br>改行を含む"
   }
 }
 ```
@@ -654,8 +670,8 @@ python -m impl_translator.src.libs.translation_restorer \
 **入力フォーマット（translations.json）:**
 ```json
 {
-  "tag_000000": "翻訳済みテキスト",
-  "tag_000001": "別の翻訳済みテキスト",
+  "id000000": "翻訳済みテキスト",
+  "id000001": "別の翻訳済みテキスト",
   ...
 }
 ```
@@ -673,7 +689,7 @@ restore_translations_to_html(
 )
 
 # またはテキスト形式から復元
-translations_text = "{ID=tag_000000} 翻訳済みテキスト\n..."
+translations_text = "id000000 翻訳済みテキスト\n..."
 translations_dict = load_translations_from_text(translations_text)
 ```
 

@@ -5,15 +5,23 @@ Orchestrates SF001-SF004 steps with progress management.
 
 import json
 import logging
+import time
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event, Lock
 from typing import Any, Dict, Optional
 
 from impl_translator.src.libs.batch_splitter import split_text_into_batches
 from impl_translator.src.libs.docling_converter import convert_pdf_to_html
 from impl_translator.src.libs.html_preproc import preprocess_html
-from impl_translator.src.libs.html_text_extractor import extract_tag_text
+from impl_translator.src.libs.html_text_extractor import extract_tag_text, format_as_text_lines
+from impl_translator.src.libs import job
 from impl_translator.src.libs.translation_formatter import translate_batches
 from impl_translator.src.libs.translation_restorer import restore_translations_to_html
+
+
+PDF_LOCK = Lock()
 
 
 class SR1000Pipeline:
@@ -33,10 +41,20 @@ class SR1000Pipeline:
         self,
         working_dir: Path,
         logger: Optional[logging.Logger] = None,
+        job_id: Optional[str] = None,
+        metadata_file: Optional[Path] = None,
     ):
-        self.working_dir = Path(working_dir)
+        self.working_dir = Path(working_dir).resolve()
+        self.job_id = job_id if job_id is not None else job.create(self.working_dir)
+        self.job_dir = job.job_directory(self.working_dir, self.job_id)
         self.logger = logger or logging.getLogger("SR1000Pipeline")
-        self.working_dir.mkdir(parents=True, exist_ok=True)
+        self.metadata_file = Path(metadata_file) if metadata_file else self.job_dir / "metadata.json"
+        if not self.job_dir.is_dir():
+            raise FileNotFoundError(f"Job does not exist: {self.job_id}")
+        self.metadata = self._load_metadata()
+        self._metadata_lock = Lock()
+        self._ollama_lock = Lock()
+        self.stop_requested = Event()
 
     def _log(self, level: str, message: str):
         """Log message."""
@@ -47,19 +65,58 @@ class SR1000Pipeline:
         elif level == "error":
             self.logger.error(message)
 
+    def _load_metadata(self) -> Dict[str, Any]:
+        """Load metadata from file."""
+        if self.metadata_file.exists():
+            with open(self.metadata_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return {}
+
+    def _save_metadata(self):
+        """Save metadata to file."""
+        self.metadata_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.metadata_file, "w", encoding="utf-8") as f:
+            json.dump(self.metadata, f, ensure_ascii=False, indent=2)
+
+    def _record_phase_metadata(self, page_id: str, phase: str, duration_sec: float, success: bool, output_path: Optional[str] = None):
+        """Record phase execution metadata."""
+        with self._metadata_lock:
+            if page_id not in self.metadata:
+                self.metadata[page_id] = {"phases": {}}
+
+            self.metadata[page_id]["phases"][phase] = {
+                "duration_sec": duration_sec,
+                "success": success,
+                "output": output_path,
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            }
+            self._save_metadata()
+
     def _get_page_state_file(self, page_id: str) -> Path:
         """Get state file for a specific page."""
-        return self.working_dir / "states" / f"{page_id}.json"
+        return self.job_dir / "states" / f"{page_id}.json"
 
     def _load_page_state(self, page_id: str) -> Dict[str, Any]:
         """Load page processing state."""
         state_file = self._get_page_state_file(page_id)
-        if state_file.exists():
-            with open(state_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+        try:
+            with state_file.open(encoding="utf-8") as file:
+                state = json.load(file)
+        except FileNotFoundError:
+            return self._new_page_state(page_id)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._log("warning", f"[{page_id}] Invalid state file, processing page again")
+            return self._new_page_state(page_id)
+        if isinstance(state, dict) and state.get("page_id") == page_id and "status" in state:
+            return state
+        self._log("warning", f"[{page_id}] Invalid state file, processing page again")
+        return self._new_page_state(page_id)
+
+    @staticmethod
+    def _new_page_state(page_id: str) -> Dict[str, Any]:
         return {
             "page_id": page_id,
-            "status": "pending",  # pending/sf001/sf002/sf003/sf004/completed/failed
+            "status": "pending",
             "steps": {
                 "sf001": {"status": "pending", "output": None},
                 "sf002": {"status": "pending", "output": None},
@@ -75,6 +132,43 @@ class SR1000Pipeline:
         with open(state_file, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
 
+    def _get_phase_dir(self, page_id: str, phase: str) -> Path:
+        """Get directory for a specific phase."""
+        # phase: sf001_to_html, sf002_preproc, sf003_translate, sf004_restore
+        phase_base_dir = self.job_dir / f"{phase}"
+        page_phase_dir = phase_base_dir / page_id
+        page_phase_dir.mkdir(parents=True, exist_ok=True)
+        return page_phase_dir
+
+    @contextmanager
+    def _track_step(self, page_id: str, state: dict, step_name: str):
+        if self.stop_requested.is_set():
+            raise KeyboardInterrupt
+        step = state["steps"][step_name]
+        stats = {"started_at": job.now(), "finished_at": None, "duration_sec": None}
+        step.update(status="running", output=None, stats=stats)
+        state["status"] = "running"
+        started = time.monotonic()
+
+        def finish():
+            stats["finished_at"] = job.now()
+            stats["duration_sec"] = time.monotonic() - started
+
+        self._save_page_state(page_id, state)
+        try:
+            yield finish
+        except KeyboardInterrupt:
+            step["status"] = "interrupted"
+            state["status"] = "interrupted"
+            raise
+        except Exception:
+            step["status"] = "failed"
+            raise
+        finally:
+            if stats["finished_at"] is None:
+                finish()
+            self._save_page_state(page_id, state)
+
     def process_page(
         self,
         page_id: str,
@@ -84,6 +178,7 @@ class SR1000Pipeline:
         ollama_model: str = "qwen3:8b",
         temperature: float = 0.3,
         resume: bool = False,
+        system_prompt: str | None = None,
     ) -> bool:
         """
         Process a single PDF page through SF001-SF004.
@@ -91,30 +186,34 @@ class SR1000Pipeline:
         Returns:
             True if successful, False if failed
         """
-        state = self._load_page_state(page_id)
-        step_base_dir = self.working_dir / page_id
-        step_base_dir.mkdir(parents=True, exist_ok=True)
+        if resume and self._load_page_state(page_id)["status"] == "completed":
+            return True
+        state = self._new_page_state(page_id)
 
         try:
+            with self._metadata_lock:
+                if self.metadata.pop(page_id, None) is not None:
+                    self._save_metadata()
+
             # SF001: PDF → HTML
-            if state["steps"]["sf001"]["status"] != "completed" or not resume:
-                self._log(
-                    "info",
-                    f"[{page_id}] SF001: Converting PDF to HTML...",
-                )
-                # Docling converter: split single page from PDF
-                html_file = step_base_dir / "sf001_page.html"
+            self._log(
+                "info",
+                f"[{page_id}] SF001: Converting PDF to HTML...",
+            )
+            with self._track_step(page_id, state, "sf001") as finish:
+                sf001_dir = self._get_phase_dir(page_id, "SF001_to_html")
+                html_file = sf001_dir / "page.html"
 
                 # Note: docling_converter expects full PDF, we extract single page
                 # Using pymupdf to extract page first
                 import pymupdf
 
-                with pymupdf.open(input_pdf) as pdf:
+                with PDF_LOCK, pymupdf.open(input_pdf) as pdf:
                     if page_number > len(pdf):
                         raise ValueError(f"Page {page_number} out of range")
 
                     # Extract single page as temporary PDF
-                    temp_pdf = step_base_dir / "temp_page.pdf"
+                    temp_pdf = sf001_dir / "temp_page.pdf"
                     with pymupdf.open() as single_page_doc:
                         single_page_doc.insert_pdf(pdf, from_page=page_number - 1, to_page=page_number - 1)
                         single_page_doc.save(temp_pdf)
@@ -122,104 +221,123 @@ class SR1000Pipeline:
                 # Convert to HTML
                 convert_pdf_to_html(
                     input_pdf=temp_pdf,
-                    working_dir=step_base_dir / "sf001_work",
+                    output_dir=sf001_dir / "work",
                     split_pages=False,  # Already single page
                 )
 
-                # Find generated HTML
-                html_files = list((step_base_dir / "sf001_work" / "input_pages").glob("*.html"))
-                if not html_files:
-                    raise FileNotFoundError("No HTML generated from PDF")
+                # Find generated HTML (output name is based on input PDF stem)
+                # With split_pages=False, it creates temp_page.html in output_dir
+                html_work_file = sf001_dir / "work" / "temp_page.html"
+                if not html_work_file.exists():
+                    raise FileNotFoundError(f"No HTML generated from PDF at {html_work_file}")
 
-                html_file.write_text(html_files[0].read_text(encoding="utf-8"), encoding="utf-8")
+                html_file.write_text(html_work_file.read_text(encoding="utf-8"), encoding="utf-8")
                 temp_pdf.unlink()
+                html_work_file.unlink()
+
+                finish()
+                duration = state["steps"]["sf001"]["stats"]["duration_sec"]
+                self._record_phase_metadata(page_id, "SF001_to_html", duration, True, str(html_file))
 
                 state["steps"]["sf001"]["status"] = "completed"
                 state["steps"]["sf001"]["output"] = str(html_file)
-                self._save_page_state(page_id, state)
-                self._log("info", f"[{page_id}] SF001: Completed")
-
-            html_file = Path(state["steps"]["sf001"]["output"])
+                self._log("info", f"[{page_id}] SF001: Completed ({duration:.2f}s)")
 
             # SF002: HTML → Preprocess
-            if state["steps"]["sf002"]["status"] != "completed" or not resume:
-                self._log(
-                    "info",
-                    f"[{page_id}] SF002: Preprocessing HTML...",
-                )
-                html_preproc_file = step_base_dir / "sf002_preproc.html"
+            self._log(
+                "info",
+                f"[{page_id}] SF002: Preprocessing HTML...",
+            )
+            with self._track_step(page_id, state, "sf002") as finish:
+                sf002_dir = self._get_phase_dir(page_id, "SF002_preproc")
+                html_preproc_file = sf002_dir / "preproc.html"
+
                 preprocess_html(
                     input_html=html_file,
                     output_html=html_preproc_file,
                 )
+
+                finish()
+                duration = state["steps"]["sf002"]["stats"]["duration_sec"]
+                self._record_phase_metadata(page_id, "SF002_preproc", duration, True, str(html_preproc_file))
+
                 state["steps"]["sf002"]["status"] = "completed"
                 state["steps"]["sf002"]["output"] = str(html_preproc_file)
-                self._save_page_state(page_id, state)
-                self._log("info", f"[{page_id}] SF002: Completed")
-
-            html_preproc_file = Path(state["steps"]["sf002"]["output"])
+                self._log("info", f"[{page_id}] SF002: Completed ({duration:.2f}s)")
 
             # SF003: Translate
-            if state["steps"]["sf003"]["status"] != "completed" or not resume:
-                self._log(
-                    "info",
-                    f"[{page_id}] SF003: Extracting text and translating...",
-                )
+            self._log(
+                "info",
+                f"[{page_id}] SF003: Extracting text and translating...",
+            )
+            with self._track_step(page_id, state, "sf003") as finish:
+                sf003_dir = self._get_phase_dir(page_id, "SF003_translate")
 
                 # SF003-1: Extract text
                 text_lines = extract_tag_text(html_preproc_file)
-                text_file = step_base_dir / "sf003_1_extracted.txt"
-                with open(text_file, "w", encoding="utf-8") as f:
-                    for line in text_lines:
-                        f.write(f"{{ID={line['id']}}} {line['text']}\n")
+                text_file = sf003_dir / "extracted.txt"
+                text_file.write_text(format_as_text_lines(text_lines), encoding="utf-8")
                 self._log("info", f"[{page_id}] SF003-1: Extracted {len(text_lines)} tags")
 
                 # SF003-2: Split into batches
                 batches = split_text_into_batches(text_file, max_chars=1500)
-                batches_file = step_base_dir / "sf003_2_batches.json"
+                batches_file = sf003_dir / "batches.json"
                 with open(batches_file, "w", encoding="utf-8") as f:
                     json.dump(batches, f, ensure_ascii=False, indent=2)
                 self._log("info", f"[{page_id}] SF003-2: Split into {len(batches)} batches")
 
                 # SF003-3: Translate batches
-                translations_file = step_base_dir / "sf003_3_translations.json"
+                translations_file = sf003_dir / "translations.json"
                 self._log("info", f"[{page_id}] SF003-3: Translating {len(batches)} batches...")
-                translate_batches(
-                    input_batches_json=batches_file,
-                    output_translations_json=translations_file,
-                    ollama_host=ollama_host,
-                    model=ollama_model,
-                    temperature=temperature,
-                    page_id=page_id,
-                    logger=self,
-                )
+                with self._ollama_lock:
+                    if self.stop_requested.is_set():
+                        raise KeyboardInterrupt
+                    translate_batches(
+                        input_batches_json=batches_file,
+                        output_translations_json=translations_file,
+                        ollama_host=ollama_host,
+                        model=ollama_model,
+                        temperature=temperature,
+                        page_id=page_id,
+                        logger=self,
+                        stop_requested=self.stop_requested.is_set,
+                        system_prompt=system_prompt,
+                    )
                 self._log("info", f"[{page_id}] SF003-3: All {len(batches)} batches translated")
+
+                finish()
+                duration = state["steps"]["sf003"]["stats"]["duration_sec"]
+                self._record_phase_metadata(page_id, "SF003_translate", duration, True, str(translations_file))
 
                 state["steps"]["sf003"]["status"] = "completed"
                 state["steps"]["sf003"]["output"] = str(translations_file)
-                self._save_page_state(page_id, state)
-                self._log("info", f"[{page_id}] SF003: Completed")
-
-            translations_file = Path(state["steps"]["sf003"]["output"])
+                self._log("info", f"[{page_id}] SF003: Completed ({duration:.2f}s)")
 
             # SF004: Restore to HTML
-            if state["steps"]["sf004"]["status"] != "completed" or not resume:
-                self._log(
-                    "info",
-                    f"[{page_id}] SF004: Restoring translations to HTML...",
-                )
-                html_translated_file = step_base_dir / "sf004_translated.html"
+            self._log(
+                "info",
+                f"[{page_id}] SF004: Restoring translations to HTML...",
+            )
+            with self._track_step(page_id, state, "sf004") as finish:
+                sf004_dir = self._get_phase_dir(page_id, "SF004_restore")
+                html_translated_file = sf004_dir / "translated.html"
+
                 restore_translations_to_html(
                     input_html=html_preproc_file,
                     translations_json=translations_file,
                     output_html=html_translated_file,
                 )
+
+                finish()
+                duration = state["steps"]["sf004"]["stats"]["duration_sec"]
+                self._record_phase_metadata(page_id, "SF004_restore", duration, True, str(html_translated_file))
+
                 state["steps"]["sf004"]["status"] = "completed"
                 state["steps"]["sf004"]["output"] = str(html_translated_file)
-                self._save_page_state(page_id, state)
-                self._log("info", f"[{page_id}] SF004: Completed")
+                self._log("info", f"[{page_id}] SF004: Completed ({duration:.2f}s)")
 
             state["status"] = "completed"
+            state.pop("error", None)
             self._save_page_state(page_id, state)
             self._log("info", f"[{page_id}] All steps completed successfully")
             return True
@@ -237,7 +355,7 @@ class SR1000Pipeline:
 
     def list_page_states(self) -> Dict[str, Dict[str, Any]]:
         """List all page states."""
-        states_dir = self.working_dir / "states"
+        states_dir = self.job_dir / "states"
         result = {}
         if states_dir.exists():
             for state_file in states_dir.glob("*.json"):

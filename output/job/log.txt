@@ -1,0 +1,5 @@
+2026-11-24 09:37:18,820 [INFO] SR1000 Pipeline started
+2026-11-24 09:37:18,820 [INFO] Input PDF: input.pdf
+2026-11-24 09:37:18,820 [INFO] Working directory: output
+2026-11-24 09:37:18,821 [INFO] Job ID: job
+2026-11-24 09:37:18,821 [ERROR] Input PDF not found: input.pdf
