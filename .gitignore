@@ -1,0 +1,12 @@
+# project specific ignores
+_data/
+
+# python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pycache/
+*.pytest_cache/
+*.mypy_cache/
+

@@ -1,0 +1,8 @@
+pdf2zh-next==2.10.2
+requests
+PyMuPDF
+PyYAML
+Flask>=2.3.0
+Werkzeug>=2.3.0
+docling
+beautifulsoup4
