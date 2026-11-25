@@ -5,12 +5,44 @@ batch_splitter の JSON バッチを受け取り、Ollama で翻訳し、翻訳�
 """
 
 import json
+import re
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Dict
 
 from impl_translator.src.libs.ai_client.ollama import OllamaClient
 from impl_translator.src.libs.translation_lines import normalize_id, parse_translation_line
+
+
+_KEEP_MARKER = re.compile(r"\[\[KEEP_[0-9]+\]\]")
+_REPEATED_TEXT = re.compile(r"\[\[KEEP_[0-9]+\]\]|\.(?:[ \t]*\.){4,}|(?P<char>[^\r\n])(?P=char){4,}")
+
+
+def _protect_repeated_text(prompt: str) -> tuple[str, dict[str, dict[str, str]]]:
+    reserved = set(_KEEP_MARKER.findall(prompt))
+    protected_by_id = {}
+    protected_lines = []
+    keep_counter = 0
+    for line in prompt.split("\n"):
+        tag_id, separator, text = line.partition(" ")
+        replacements = {}
+
+        def protect(match: re.Match[str]) -> str:
+            nonlocal keep_counter
+            while True:
+                keep_counter += 1
+                marker = f"[[KEEP_{keep_counter}]]"
+                if marker not in reserved:
+                    break
+            replacements[marker] = match.group()
+            return marker
+
+        protected_lines.append(tag_id + separator + _REPEATED_TEXT.sub(protect, text))
+        if replacements:
+            protected_by_id[tag_id] = replacements
+
+    return "\n".join(protected_lines), protected_by_id
 
 
 def format_batch_for_prompt(batch: Dict[str, Any]) -> str:
@@ -89,7 +121,7 @@ def translate_batch(
         Dict[str, str]: {tag_id: translated_text, ...}
     """
     # バッチを Ollama 送信用フォーマットに変換
-    prompt_text = format_batch_for_prompt(batch)
+    prompt_text, protected_by_id = _protect_repeated_text(format_batch_for_prompt(batch))
 
     # Ollama クライアント初期化
     client = OllamaClient(host=ollama_host, model=model)
@@ -100,6 +132,8 @@ def translate_batch(
         "Copy the ID (for example id000006) exactly, followed by a space and the translation. "
         "Return one line per input line in the same order. Preserve <br> markers."
     )
+    if protected_by_id:
+        instructions += " Copy each [[KEEP_n]] marker exactly once on its original ID line."
     system = "\n".join(part for part in ("/no_think", system_prompt, instructions) if part)
 
     # API 呼び出し
@@ -112,12 +146,25 @@ def translate_batch(
     )
 
     # 応答をパース
-    translations = parse_translation_response(response)
+    translations = {
+        normalize_id(tag_id): text
+        for tag_id, text in parse_translation_response(response).items()
+    }
+    if protected_by_id:
+        for tag_id in translations.keys() | protected_by_id.keys():
+            text = translations.get(tag_id, "")
+            replacements = protected_by_id.get(tag_id, {})
+            if Counter(_KEEP_MARKER.findall(text)) != Counter(replacements.keys()):
+                raise ValueError(f"Ollama response has missing or unexpected KEEP markers for {tag_id}")
+            if replacements:
+                translations[tag_id] = _KEEP_MARKER.sub(
+                    lambda match: replacements[match.group()], text
+                )
     original_ids = {normalize_id(line["id"]): line["id"] for line in batch["lines"]}
     return {
-        original_ids[normalized_id]: text
+        original_ids[tag_id]: text
         for tag_id, text in translations.items()
-        if (normalized_id := normalize_id(tag_id)) in original_ids
+        if tag_id in original_ids
     }
 
 

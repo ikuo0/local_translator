@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Lock
 
+from impl_translator.src.features.SR1000.sf005_pdf import export_translated_pages
 from impl_translator.src.features.SR1000.sr1000_pipeline import PDF_LOCK, SR1000Pipeline
 from impl_translator.src.libs import job
 from impl_translator.src.libs.ai_client.ollama import OllamaClient
@@ -304,9 +305,29 @@ def _process_pages(
     if failed_pages:
         logger.warning(f"Failed pages: {failed_pages}")
         return 1
-    else:
-        logger.info("All pages processed successfully!")
-        return 0
+    if completed_count != len(pages):
+        logger.error("SF005: Export requires all selected pages to be complete")
+        return 1
+
+    phase_dir = pipeline.job_dir / "SF005"
+    html_pages = (
+        (
+            pipeline.job_dir / "SF001_to_html" / page_id / "page.html",
+            pipeline.job_dir / "SF004_restore" / page_id / "translated.html",
+        )
+        for page_id in (f"page_{number:06d}" for number in range(start_page, end_page + 1))
+    )
+    logger.info("SF005: Exporting PDF, text, and Markdown")
+    try:
+        output_pdf = export_translated_pages(html_pages, phase_dir, f"{input_pdf.stem}jpn.pdf")
+    except (OSError, RuntimeError, ValueError) as error:
+        logger.error("SF005: Export failed: %s", error)
+        return 1
+    logger.info("SF005: Saved %s", output_pdf)
+    logger.info("SF005: Saved page text in %s", phase_dir / "text")
+    logger.info("SF005: Saved original and translated Markdown in %s and %s", phase_dir / "md_en", phase_dir / "md_jp")
+    logger.info("All pages processed successfully!")
+    return 0
 
 
 def main():

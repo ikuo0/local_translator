@@ -8,6 +8,8 @@ import requests
 
 
 logger = logging.getLogger("SR1000.ollama")
+_TOKEN_REPEAT_ERROR = "prediction aborted, token repeat limit reached"
+_TOKEN_REPEAT_RETRIES = 3
 
 
 class OllamaClient:
@@ -41,6 +43,7 @@ class OllamaClient:
         stream: bool = False,
         think: Optional[bool] = None,
         log_cache_metrics: bool = False,
+        repeat_penalty: float = 1.0,
     ) -> str:
         """
         Generate text using Ollama.
@@ -53,6 +56,7 @@ class OllamaClient:
             stream: Whether to stream response (default: False)
             think: Whether to enable thinking (None uses the model default)
             log_cache_metrics: Log cache metrics for a nonstreaming diagnostic request
+            repeat_penalty: Initial repetition penalty. Increases by 0.1 per token-repeat retry.
 
         Returns:
             Generated text response
@@ -69,6 +73,7 @@ class OllamaClient:
             "stream": stream,
             "options": {
                 "temperature": temperature,
+                "repeat_penalty": repeat_penalty,
             },
         }
 
@@ -81,12 +86,35 @@ class OllamaClient:
         if keep_alive:
             payload["keep_alive"] = keep_alive
 
-        response = requests.post(
-            url,
-            json=payload,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
+        for attempt in range(_TOKEN_REPEAT_RETRIES + 1):
+            response = requests.post(url, json=payload, timeout=self.timeout)
+            try:
+                response.raise_for_status()
+                break
+            except requests.HTTPError as exc:
+                body = response.text.strip()
+                if _TOKEN_REPEAT_ERROR in body and attempt < _TOKEN_REPEAT_RETRIES:
+                    retry_number = attempt + 1
+                    payload["options"] = {
+                        "temperature": round(temperature + 0.1 * retry_number, 10),
+                        "repeat_penalty": round(repeat_penalty + 0.1 * retry_number, 10),
+                    }
+                    logger.warning(
+                        "Ollama token repeat limit reached, retry %d/%d "
+                        "(temperature=%g, repeat_penalty=%g)",
+                        retry_number,
+                        _TOKEN_REPEAT_RETRIES,
+                        payload["options"]["temperature"],
+                        payload["options"]["repeat_penalty"],
+                    )
+                    continue
+                if not body:
+                    raise
+                raise requests.HTTPError(
+                    f"{exc} | Ollama response: {body}",
+                    response=response,
+                    request=exc.request,
+                ) from exc
 
         if stream:
             # Collect all streamed responses

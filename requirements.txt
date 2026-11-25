@@ -6,3 +6,4 @@ Flask>=2.3.0
 Werkzeug>=2.3.0
 docling
 beautifulsoup4
+markdownify>=1.2,<2
