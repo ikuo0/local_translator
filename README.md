@@ -4,6 +4,16 @@
 
 ## 1. Ollama のセットアップと起動
 
+### 推奨スペック
+
+| 項目 | 推奨構成 |
+| --- | --- |
+| メインメモリ | 64 GB |
+| GPU | NVIDIA GPU、VRAM 8 GB 以上 |
+| CPU | マルチコア性能に余裕のある CPU。翻訳処理中に、24コアの環境で CPU 使用率が約50%になった実測例があります。 |
+
+### セットアップ手順
+
 Windows に WSL 2、Docker Desktop、VS Code の WSL と Dev Containers 拡張機能を準備します。Docker Desktop で WSL 2 バックエンドと、作業に使うディストリビューションの WSL 統合を有効にします。このリポジトリの Compose 設定は、WSL 2 で利用できる NVIDIA GPU と対応ドライバーが前提です。[Docker Desktop の WSL 設定](https://docs.docker.com/desktop/features/wsl/)・[GPU の要件](https://docs.docker.com/desktop/features/gpu/)
 
 Docker Desktop を起動し、**WSL コンソール**でリポジトリのルートから実行します。
