@@ -1,6 +1,5 @@
 """Job summary statistics and metrics calculation."""
 
-import json
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -61,7 +60,6 @@ CURRENT_PAGE_STATUS = {
     "error": "failed",
     "progress": "running",
 }
-PHASES = ("SF001_to_html", "SF002_preproc", "SF003_translate", "SF004_restore")
 
 
 def elapsed_between(start: str | None, end: str | None) -> float | None:
@@ -81,48 +79,18 @@ def page_status(page_info: dict[str, Any]) -> str:
     return CURRENT_PAGE_STATUS.get(status, status)
 
 
-def read_json(path: Path) -> dict:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
-        # SR1000 can be writing the file while the dashboard polls.
-        return {}
-
-
-def load_job_state(
-    working_dir: Path, job_id: str, *, include_timings: bool = True,
-) -> dict[str, Any]:
-    """Read current SR1000 output and expose the legacy metrics fields."""
+def load_job_state(working_dir: Path, job_id: str) -> dict[str, Any]:
+    """Load the job snapshot and normalize page states for reporting."""
     state = job.load(working_dir, job_id)
     data = state["data"]
-    selection = data.get("selection")
-    if selection is None:
-        return state
-
-    data["page_count"] = selection["selected_page_count"]
     directory = job.job_directory(working_dir, job_id)
     data.setdefault("log_file", str(directory / "log.txt"))
-    data["elapsed_seconds"] = elapsed_between(state.get("created_at"), state.get("updated_at"))
-    metadata = None
-    for number, page in data["pages"].items():
+    if "selection" in data or "elapsed_seconds" not in data:
+        data["elapsed_seconds"] = elapsed_between(state.get("created_at"), state.get("updated_at"))
+    for page in data.get("pages", {}).values():
         page["status"] = page_status(page)
-        if not include_timings or page["status"] != "completed":
-            continue
-        page_id = f"page_{int(number):06d}"
-        saved = read_json(directory / "states" / f"{page_id}.json")
-        steps = saved.get("steps", {})
-        elapsed = elapsed_between(
-            steps.get("sf001", {}).get("stats", {}).get("started_at"),
-            steps.get("sf004", {}).get("stats", {}).get("finished_at"),
-        )
-        if elapsed is None:
-            if metadata is None:
-                metadata = read_json(directory / "metadata.json")
-            phases = metadata.get(page_id, {}).get("phases", {})
-            durations = [phases.get(phase, {}).get("duration_sec") for phase in PHASES]
-            if all(isinstance(duration, (int, float)) for duration in durations):
-                elapsed = sum(durations)
-        page["elapsed_seconds"] = elapsed
+        if "duration_sec" in page.get("stats", {}):
+            page["elapsed_seconds"] = page["stats"]["duration_sec"]
     return state
 
 

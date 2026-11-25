@@ -1,597 +1,180 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SR1001: Job Progress Monitoring</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SR1001 ジョブ進捗</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-        
-        .container {
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            padding: 40px;
-            max-width: 600px;
-            width: 100%;
-        }
-        
-        h1 {
-            color: #333;
-            margin-bottom: 30px;
-            text-align: center;
-            font-size: 28px;
-        }
-        
-        .input-group {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 30px;
-        }
-        
-        input[type="text"] {
-            flex: 1;
-            padding: 12px 16px;
-            border: 2px solid #ddd;
-            border-radius: 8px;
-            font-size: 16px;
-            transition: border-color 0.3s;
-        }
-        
-        input[type="text"]:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-        
-        button {
-            padding: 12px 24px;
-            background: #667eea;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: bold;
-            cursor: pointer;
-            transition: background 0.3s;
-        }
-        
-        button:hover {
-            background: #5568d3;
-        }
-        
-        button:active {
-            transform: scale(0.98);
-        }
-        
-        .status-box {
-            background: #f8f9fa;
-            border-left: 4px solid #667eea;
-            padding: 20px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            display: none;
-        }
-        
-        .status-box.active {
-            display: block;
-        }
-        
-        .status-row {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 12px;
-            font-size: 14px;
-        }
-        
-        .status-row label {
-            font-weight: bold;
-            color: #555;
-        }
-        
-        .status-row value {
-            color: #333;
-        }
-        
-        .progress-container {
-            margin: 20px 0;
-        }
-        
-        .progress-bar {
-            width: 100%;
-            height: 24px;
-            background: #e0e0e0;
-            border-radius: 12px;
-            overflow: hidden;
-            margin-bottom: 8px;
-        }
-        
-        .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #667eea, #764ba2);
-            transition: width 0.3s ease;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 12px;
-            color: white;
-            font-weight: bold;
-        }
-        
-        .pages-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(60px, 1fr));
-            gap: 8px;
-            margin-top: 20px;
-        }
-        
-        .page-cell {
-            aspect-ratio: 1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 6px;
-            font-size: 12px;
-            font-weight: bold;
-            color: white;
-            cursor: pointer;
-            transition: transform 0.2s;
-        }
-        
-        .page-cell:hover {
-            transform: scale(1.1);
-        }
-        
-        .page-cell.completed {
-            background: #4caf50;
-        }
-        
-        .page-cell.failed {
-            background: #f44336;
-        }
-        
-        .page-cell.running {
-            background: #ff9800;
-            animation: pulse 1.5s infinite;
-        }
-        
-        .page-cell.interrupted {
-            background: #2196f3;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.6; }
-        }
-        
-        .error-message {
-            background: #ffebee;
-            color: #c62828;
-            padding: 12px;
-            border-radius: 8px;
-            margin-top: 20px;
-            display: none;
-        }
-        
-        .error-message.show {
-            display: block;
-        }
-        
-        .legend {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 10px;
-            margin-top: 20px;
-            padding-top: 20px;
-            border-top: 1px solid #ddd;
-            font-size: 12px;
-        }
-        
-        .legend-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .legend-color {
-            width: 16px;
-            height: 16px;
-            border-radius: 3px;
-        }
-        
-        .refresh-btn {
-            margin-top: 20px;
-            width: 100%;
-            background: #666;
-        }
-        
-        .refresh-btn:hover {
-            background: #555;
-        }
-        
-        .summary-section {
-            background: #f0f4ff;
-            border-left: 4px solid #667eea;
-            padding: 20px;
-            border-radius: 8px;
-            margin-top: 20px;
-            display: none;
-        }
-        
-        .summary-section.active {
-            display: block;
-        }
-        
-        .summary-title {
-            font-weight: bold;
-            color: #333;
-            margin-bottom: 12px;
-            font-size: 14px;
-        }
-        
-        .summary-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 12px;
-            font-size: 13px;
-        }
-        
-        .summary-item {
-            background: white;
-            padding: 10px;
-            border-radius: 6px;
-            border-left: 3px solid #667eea;
-        }
-        
-        .summary-item-label {
-            font-weight: bold;
-            color: #666;
-            font-size: 11px;
-            text-transform: uppercase;
-            margin-bottom: 4px;
-        }
-        
-        .summary-item-value {
-            font-size: 16px;
-            font-weight: bold;
-            color: #333;
-        }
-        
-        .summary-item-unit {
-            font-size: 11px;
-            color: #999;
-            margin-left: 4px;
-        }
-        
-        .summary-row {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 12px;
-            margin-bottom: 12px;
-        }
-        
-        .summary-row-title {
-            font-weight: bold;
-            color: #555;
-            margin-top: 10px;
-            margin-bottom: 8px;
-            font-size: 12px;
-            grid-column: 1 / -1;
-            border-bottom: 1px solid #ddd;
-            padding-bottom: 4px;
-        }
+        :root { font-family: system-ui, sans-serif; color: #172334; background: #f2f5f9; }
+        body { margin: 0; }
+        main { max-width: 72rem; margin: 0 auto; padding: 2rem 1rem; }
+        h1 { margin: 0 0 1.25rem; font-size: 1.8rem; }
+        h2 { margin-top: 0; font-size: 1.15rem; }
+        form { display: flex; align-items: end; gap: .65rem; flex-wrap: wrap; }
+        label { display: grid; gap: .3rem; }
+        input, button { font: inherit; padding: .55rem .7rem; border-radius: .4rem; }
+        input { width: min(24rem, 70vw); border: 1px solid #8d9bab; }
+        button { cursor: pointer; border: 1px solid #205b96; color: white; background: #205b96; }
+        section { background: white; border: 1px solid #d6dee8; border-radius: .65rem; padding: 1rem; margin-top: 1rem; }
+        dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .35rem 1rem; }
+        dt { color: #455469; }
+        dd { margin: 0; overflow-wrap: anywhere; }
+        progress { width: 100%; accent-color: #205b96; }
+        .table-scroll { overflow: auto; max-height: 34rem; }
+        table { border-collapse: collapse; width: 100%; font-size: .88rem; }
+        th, td { padding: .45rem .55rem; border-bottom: 1px solid #dde4ed; text-align: left; }
+        th { position: sticky; top: 0; background: #edf2f8; white-space: nowrap; }
+        td:nth-child(-n+7) { white-space: nowrap; }
+        .error, td[data-state="failed"], td[data-state="interrupted"] { color: #a32020; }
+        td[data-state="running"] { color: #925600; }
+        td[data-state="completed"] { color: #17613e; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>📊 Job Progress Monitor</h1>
-        
-        <div class="input-group">
-            <input type="text" id="jobId" placeholder="Enter Job ID..." />
-            <button onclick="loadJobStatus()">Load</button>
-        </div>
-        
-        <div id="statusBox" class="status-box">
-            <div class="status-row">
-                <label>Job ID:</label>
-                <span id="displayJobId"></span>
+<main>
+    <h1>SR1001 ジョブ進捗</h1>
+    <form id="job-form">
+        <label>ジョブ ID <input id="job-id" required autocomplete="off" spellcheck="false"></label>
+        <button type="submit">表示・更新</button>
+    </form>
+    <p id="error" role="alert" class="error" hidden></p>
+
+    <div id="report" hidden>
+        <section aria-labelledby="progress-title">
+            <h2 id="progress-title">ページ進捗</h2>
+            <dl>
+                <dt>ジョブ</dt><dd id="display-id"></dd>
+                <dt>状態</dt><dd id="status"></dd>
+                <dt>対象ページ</dt><dd id="selection"></dd>
+                <dt>進捗</dt><dd id="counts"></dd>
+                <dt>最終更新</dt><dd id="updated"></dd>
+                <dt>ジョブ経過時間</dt><dd id="elapsed"></dd>
+                <dt>完了ページの計測</dt><dd id="timing"></dd>
+            </dl>
+            <progress id="progress" max="100" value="0" aria-label="完了ページの割合"></progress>
+        </section>
+        <section aria-labelledby="export-title">
+            <h2 id="export-title">SF005 成果物の出力</h2>
+            <dl>
+                <dt>状態</dt><dd id="export-status"></dd>
+                <dt>処理時間</dt><dd id="export-time"></dd>
+            </dl>
+            <p id="export-error" class="error" hidden></p>
+            <dl id="outputs" hidden></dl>
+        </section>
+        <section aria-labelledby="pages-title">
+            <h2 id="pages-title">ページ別の処理時間</h2>
+            <div class="table-scroll" tabindex="0" aria-label="ページ別の計測一覧">
+                <table>
+                    <thead>
+                        <tr><th>ページ</th><th>状態</th><th>合計</th><th>SF001</th><th>SF002</th><th>SF003</th><th>SF004</th><th>エラー</th></tr>
+                    </thead>
+                    <tbody id="pages"></tbody>
+                </table>
             </div>
-            <div class="status-row">
-                <label>Status:</label>
-                <span id="displayStatus"></span>
-            </div>
-            <div class="status-row">
-                <label>Pages:</label>
-                <span id="displayPages"></span>
-            </div>
-            <div class="status-row">
-                <label>Completed:</label>
-                <span id="displayCompleted"></span>
-            </div>
-            <div class="status-row">
-                <label>Failed:</label>
-                <span id="displayFailed"></span>
-            </div>
-            <div class="status-row">
-                <label>Running:</label>
-                <span id="displayRunning"></span>
-            </div>
-            <div class="status-row">
-                <label>Elapsed Time:</label>
-                <span id="displayElapsed"></span>
-            </div>
-            
-            <div class="progress-container">
-                <div class="progress-bar">
-                    <div id="progressFill" class="progress-fill" style="width: 0%">0%</div>
-                </div>
-            </div>
-            
-            <div class="pages-grid" id="pagesGrid"></div>
-            
-            <div id="summarySection" class="summary-section">
-                <div class="summary-title">📈 Summary Statistics</div>
-                
-                <div class="summary-row">
-                    <div class="summary-row-title">Timing (Completed Pages)</div>
-                    <div class="summary-item">
-                        <div class="summary-item-label">Average Time</div>
-                        <div class="summary-item-value"><span id="summaryAvgTime">-</span><span class="summary-item-unit">sec</span></div>
-                    </div>
-                    <div class="summary-item">
-                        <div class="summary-item-label">Min Time</div>
-                        <div class="summary-item-value"><span id="summaryMinTime">-</span><span class="summary-item-unit">sec</span></div>
-                    </div>
-                    <div class="summary-item">
-                        <div class="summary-item-label">Max Time</div>
-                        <div class="summary-item-value"><span id="summaryMaxTime">-</span><span class="summary-item-unit">sec</span></div>
-                    </div>
-                    <div class="summary-item">
-                        <div class="summary-item-label">Total Time</div>
-                        <div class="summary-item-value"><span id="summaryTotalTime">-</span><span class="summary-item-unit">sec</span></div>
-                    </div>
-                </div>
-                
-                <div class="summary-row">
-                    <div class="summary-row-title">Input Characters</div>
-                    <div class="summary-item">
-                        <div class="summary-item-label">Average</div>
-                        <div class="summary-item-value"><span id="summaryAvgInputChars">-</span></div>
-                    </div>
-                    <div class="summary-item">
-                        <div class="summary-item-label">Total</div>
-                        <div class="summary-item-value"><span id="summaryTotalInputChars">-</span></div>
-                    </div>
-                    <div class="summary-item">
-                        <div class="summary-item-label">Min</div>
-                        <div class="summary-item-value"><span id="summaryMinInputChars">-</span></div>
-                    </div>
-                    <div class="summary-item">
-                        <div class="summary-item-label">Max</div>
-                        <div class="summary-item-value"><span id="summaryMaxInputChars">-</span></div>
-                    </div>
-                </div>
-                
-                <div class="summary-row">
-                    <div class="summary-row-title">Output Characters</div>
-                    <div class="summary-item">
-                        <div class="summary-item-label">Average</div>
-                        <div class="summary-item-value"><span id="summaryAvgOutputChars">-</span></div>
-                    </div>
-                    <div class="summary-item">
-                        <div class="summary-item-label">Total</div>
-                        <div class="summary-item-value"><span id="summaryTotalOutputChars">-</span></div>
-                    </div>
-                    <div class="summary-item">
-                        <div class="summary-item-label">Min</div>
-                        <div class="summary-item-value"><span id="summaryMinOutputChars">-</span></div>
-                    </div>
-                    <div class="summary-item">
-                        <div class="summary-item-label">Max</div>
-                        <div class="summary-item-value"><span id="summaryMaxOutputChars">-</span></div>
-                    </div>
-                </div>
-                
-                <div class="summary-row">
-                    <div class="summary-row-title">Compression</div>
-                    <div class="summary-item">
-                        <div class="summary-item-label">Ratio (Output/Input)</div>
-                        <div class="summary-item-value"><span id="summaryCompressionRatio">-</span></div>
-                    </div>
-                </div>
-            </div>
-            
-            <button class="refresh-btn" onclick="loadJobStatus()">🔄 Refresh</button>
-        </div>
-        
-        <div id="errorMsg" class="error-message"></div>
-        
-        <div class="legend">
-            <div class="legend-item">
-                <div class="legend-color" style="background: #4caf50;"></div>
-                <span>Completed</span>
-            </div>
-            <div class="legend-item">
-                <div class="legend-color" style="background: #f44336;"></div>
-                <span>Failed</span>
-            </div>
-            <div class="legend-item">
-                <div class="legend-color" style="background: #ff9800;"></div>
-                <span>Running</span>
-            </div>
-            <div class="legend-item">
-                <div class="legend-color" style="background: #2196f3;"></div>
-                <span>Interrupted</span>
-            </div>
-        </div>
+        </section>
     </div>
-    
-    <script>
-        async function loadJobStatus() {
-            const jobId = document.getElementById('jobId').value;
-            const errorMsg = document.getElementById('errorMsg');
-            const statusBox = document.getElementById('statusBox');
-            
-            if (!jobId) {
-                errorMsg.textContent = 'Please enter a Job ID';
-                errorMsg.classList.add('show');
-                statusBox.classList.remove('active');
-                return;
-            }
-            
-            try {
-                const response = await fetch(`/sr1001/api/job/${jobId}`);
-                if (!response.ok) {
-                    throw new Error(`Job not found: ${jobId}`);
-                }
-                
-                const data = await response.json();
-                
-                // Update display
-                document.getElementById('displayJobId').textContent = data.job_id;
-                document.getElementById('displayStatus').textContent = data.status;
-                document.getElementById('displayPages').textContent = data.total_pages;
-                document.getElementById('displayCompleted').textContent = data.completed;
-                document.getElementById('displayFailed').textContent = data.failed;
-                document.getElementById('displayRunning').textContent = data.running;
-                document.getElementById('displayElapsed').textContent = formatTime(data.elapsed_seconds);
-                
-                // Update progress bar
-                const progressFill = document.getElementById('progressFill');
-                progressFill.style.width = data.progress_percent + '%';
-                progressFill.textContent = data.progress_percent + '%';
-                
-                // Load and display pages
-                await loadPages(jobId);
-                
-                // Load and display summary
-                await loadSummary(jobId);
-                
-                errorMsg.classList.remove('show');
-                statusBox.classList.add('active');
-                
-            } catch (error) {
-                errorMsg.textContent = '❌ ' + error.message;
-                errorMsg.classList.add('show');
-                statusBox.classList.remove('active');
-            }
+</main>
+<script>
+    const element = (id) => document.getElementById(id);
+    const setText = (id, value) => { element(id).textContent = value; };
+    const seconds = (value) => Number.isFinite(value) ? value.toFixed(2) + ' 秒' : '—';
+    const labels = {
+        pending: '未着手', running: '処理中', progress: '処理中',
+        awaiting_export: '成果物の出力待ち', pages_completed: 'ページ処理完了',
+        completed: '完了', complete: '完了', failed: '失敗', error: '失敗',
+        interrupted: '中断', unknown: '記録なし'
+    };
+    const label = (status) => labels[status] ?? status;
+    const phases = ['sf001', 'sf002', 'sf003', 'sf004'];
+    let activeJob = '';
+    let latestRequest = 0;
+    let loading = false;
+
+    function render(report) {
+        setText('display-id', report.job_id);
+        setText('status', label(report.status));
+        const range = report.selection;
+        setText('selection', range
+            ? `${range.start_page}–${range.end_page} / 全 ${range.document_page_count} ページ`
+            : `${report.total_pages} ページ`);
+        setText('counts', `完了 ${report.completed}/${report.total_pages}（${report.progress_percent}%） · 処理中 ${report.running} · 未着手 ${report.pending} · 失敗 ${report.failed} · 中断 ${report.interrupted}`);
+        element('progress').value = report.progress_percent;
+        setText('updated', report.updated_at ? new Date(report.updated_at).toLocaleString() : '—');
+        setText('elapsed', seconds(report.elapsed_seconds));
+        const timing = report.summary;
+        setText('timing', timing.timed_completed_pages
+            ? `${timing.timed_completed_pages} ページ · 平均 ${seconds(timing.avg_elapsed_seconds)} · 最短 ${seconds(timing.min_elapsed_seconds)} · 最長 ${seconds(timing.max_elapsed_seconds)} · 合計 ${seconds(timing.total_elapsed_seconds)}`
+            : '記録なし');
+
+        const output = report.sf005;
+        setText('export-status', output.error === 'Interrupted' ? '中断' : label(output.status));
+        setText('export-time', seconds(output.stats?.duration_sec));
+        setText('export-error', output.error ?? '');
+        element('export-error').hidden = !output.error;
+        const paths = Object.entries(output.outputs ?? {});
+        element('outputs').hidden = paths.length === 0;
+        element('outputs').replaceChildren(...paths.flatMap(([name, path]) => {
+            const key = document.createElement('dt');
+            const value = document.createElement('dd');
+            key.textContent = name;
+            value.textContent = path;
+            return [key, value];
+        }));
+
+        const rows = document.createDocumentFragment();
+        for (const [number, page] of Object.entries(report.pages)) {
+            const row = document.createElement('tr');
+            const values = [number, label(page.status), seconds(page.elapsed_seconds),
+                ...phases.map((phase) => seconds(page.stats?.phases?.[phase]?.duration_sec)),
+                page.error ?? '—'];
+            values.forEach((value, index) => {
+                const cell = row.insertCell();
+                cell.textContent = value;
+                if (index === 1) cell.dataset.state = page.status;
+            });
+            rows.appendChild(row);
         }
-        
-        async function loadPages(jobId) {
-            try {
-                const response = await fetch(`/sr1001/api/job/${jobId}/pages`);
-                if (!response.ok) return;
-                
-                const data = await response.json();
-                const pagesGrid = document.getElementById('pagesGrid');
-                pagesGrid.innerHTML = '';
-                
-                for (const [i, page] of Object.entries(data.pages)) {
-                    
-                    const cell = document.createElement('div');
-                    cell.className = `page-cell ${page.status}`;
-                    cell.textContent = i;
-                    cell.title = `Page ${i}: ${page.status}`;
-                    pagesGrid.appendChild(cell);
-                }
-            } catch (error) {
-                console.error('Error loading pages:', error);
-            }
+        element('pages').replaceChildren(rows);
+        element('report').hidden = false;
+    }
+
+    async function refresh() {
+        const request = ++latestRequest;
+        loading = true;
+        try {
+            const response = await fetch(`/sr1001/api/job/${encodeURIComponent(activeJob)}`, {cache: 'no-store'});
+            const report = await response.json();
+            if (request !== latestRequest) return;
+            if (!response.ok) throw new Error(report.error ?? `HTTP ${response.status}`);
+            render(report);
+            element('error').hidden = true;
+        } catch (error) {
+            if (request !== latestRequest) return;
+            setText('error', error.message);
+            element('error').hidden = false;
+        } finally {
+            if (request === latestRequest) loading = false;
         }
-        
-        async function loadSummary(jobId) {
-            try {
-                const response = await fetch(`/sr1001/api/job/${jobId}/summary`);
-                if (!response.ok) return;
-                
-                const data = await response.json();
-                
-                // Only show summary if there are completed pages
-                if (data.completed_pages === 0) {
-                    document.getElementById('summarySection').classList.remove('active');
-                    return;
-                }
-                
-                // Update summary fields
-                const formatNumber = (n) => n !== null ? Math.round(n * 100) / 100 : '-';
-                
-                document.getElementById('summaryAvgTime').textContent = formatNumber(data.avg_elapsed_seconds);
-                document.getElementById('summaryMinTime').textContent = formatNumber(data.min_elapsed_seconds);
-                document.getElementById('summaryMaxTime').textContent = formatNumber(data.max_elapsed_seconds);
-                document.getElementById('summaryTotalTime').textContent = formatNumber(data.total_elapsed_seconds);
-                
-                document.getElementById('summaryAvgInputChars').textContent = formatNumber(data.avg_input_characters);
-                document.getElementById('summaryTotalInputChars').textContent = data.total_input_characters !== null ? data.total_input_characters : '-';
-                document.getElementById('summaryMinInputChars').textContent = data.min_input_characters !== null ? data.min_input_characters : '-';
-                document.getElementById('summaryMaxInputChars').textContent = data.max_input_characters !== null ? data.max_input_characters : '-';
-                
-                document.getElementById('summaryAvgOutputChars').textContent = formatNumber(data.avg_output_characters);
-                document.getElementById('summaryTotalOutputChars').textContent = data.total_output_characters !== null ? data.total_output_characters : '-';
-                document.getElementById('summaryMinOutputChars').textContent = data.min_output_characters !== null ? data.min_output_characters : '-';
-                document.getElementById('summaryMaxOutputChars').textContent = data.max_output_characters !== null ? data.max_output_characters : '-';
-                
-                document.getElementById('summaryCompressionRatio').textContent = formatNumber(data.avg_compression_ratio);
-                
-                // Show summary section
-                document.getElementById('summarySection').classList.add('active');
-                
-            } catch (error) {
-                console.error('Error loading summary:', error);
-                document.getElementById('summarySection').classList.remove('active');
-            }
-        }
-        
-        function formatTime(seconds) {
-            const hours = Math.floor(seconds / 3600);
-            const minutes = Math.floor((seconds % 3600) / 60);
-            const secs = Math.floor(seconds % 60);
-            
-            if (hours > 0) {
-                return `${hours}h ${minutes}m ${secs}s`;
-            } else if (minutes > 0) {
-                return `${minutes}m ${secs}s`;
-            } else {
-                return `${secs}s`;
-            }
-        }
-        
-        // Auto-refresh every 5 seconds
-        setInterval(() => {
-            const jobId = document.getElementById('jobId').value;
-            if (jobId && document.getElementById('statusBox').classList.contains('active')) {
-                loadJobStatus();
-            }
-        }, 5000);
-        
-        // Allow Enter key to load
-        document.getElementById('jobId').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') loadJobStatus();
-        });
-        
-        // Auto-load job ID from URL parameter if provided
-        window.addEventListener('DOMContentLoaded', () => {
-            const urlParams = new URLSearchParams(window.location.search);
-            const jobId = urlParams.get('id') || urlParams.get('job_id');
-            
-            if (jobId) {
-                document.getElementById('jobId').value = jobId;
-                // Small delay to ensure DOM is ready
-                setTimeout(() => loadJobStatus(), 100);
-            }
-        });
-    </script>
+    }
+
+    element('job-form').addEventListener('submit', (event) => {
+        event.preventDefault();
+        const jobId = element('job-id').value.trim();
+        if (!jobId) return;
+        if (activeJob !== jobId) element('report').hidden = true;
+        activeJob = jobId;
+        refresh();
+    });
+    const query = new URLSearchParams(location.search);
+    activeJob = (query.get('id') ?? query.get('job_id') ?? '').trim();
+    if (activeJob) {
+        element('job-id').value = activeJob;
+        refresh();
+    }
+    setInterval(() => {
+        if (activeJob && !loading) refresh();
+    }, 3000);
+</script>
 </body>
 </html>

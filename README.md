@@ -97,15 +97,12 @@ cd /workspace
 WORK_DIR=./output/job
 JOB_ID='<job_id>'
 
-# 完了・失敗件数と経過時間を表示
-python -m impl_translator.src.features.SR1001.batch summary \
+# ページ進捗・経過時間・SF005 の状態を3秒ごとに表示
+watch -n 3 python -m impl_translator.src.features.SR1001.batch status \
   --working-dir "$WORK_DIR" --job-id "$JOB_ID"
-
-# ログをリアルタイムで確認
-tail -f "$WORK_DIR/$JOB_ID/log.txt"
 ```
 
-`--log-file` を指定した場合はそのファイルを開きます。翻訳処理と成果物の出力が完了すると、ログに `SF005: Saved` と出力先が表示されます。
+`watch -n 3` を外すと1回だけ表示します。ブラウザーでの確認方法は [SR1001 GUI](JOB_MONITORING.md#sr1001-gui) を参照してください。ログを追う場合は `tail -f "$WORK_DIR/$JOB_ID/log.txt"` を使います。`--log-file` を指定した場合はそのファイルを開きます。
 
 ## 関連資料
 

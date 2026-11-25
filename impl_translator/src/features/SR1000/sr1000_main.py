@@ -7,7 +7,9 @@ batch_splitter, translation_formatter, translation_restorer)
 import argparse
 import logging
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from threading import Lock
 
@@ -181,6 +183,7 @@ def translate_pdf(
                 number: page_progress(pipeline.get_page_status(f"page_{number:06d}"))
                 for number in range(start_page, end_page + 1)
             }
+            data["sf005"] = {"status": "pending"}
             save_job_progress(working_dir, job_state)
 
             if debug_ollama_cache:
@@ -203,10 +206,33 @@ def page_progress(state: dict) -> dict:
     """Project a saved page state into the job progress record."""
     status = state["status"]
     if status == "completed":
-        return {"status": "complete"}
-    if status in {"failed", "interrupted", "running"}:
-        return {"status": "error", "error": state.get("error") or "Page processing did not finish"}
-    return {"status": "pending"}
+        progress = {"status": "complete"}
+    elif status in {"failed", "interrupted", "running"}:
+        progress = {"status": "error", "error": state.get("error") or "Page processing did not finish"}
+    else:
+        progress = {"status": "pending"}
+
+    phases = {
+        name: step["stats"]
+        for name, step in state.get("steps", {}).items()
+        if step.get("stats")
+    }
+    if phases:
+        started_at = phases.get("sf001", {}).get("started_at")
+        finished_at = next(
+            (phases[name].get("finished_at") for name in ("sf004", "sf003", "sf002", "sf001") if name in phases),
+            None,
+        )
+        stats = {"started_at": started_at, "finished_at": finished_at, "phases": phases}
+        if started_at and finished_at:
+            try:
+                started = datetime.fromisoformat(started_at)
+                finished = datetime.fromisoformat(finished_at)
+                stats["duration_sec"] = (finished - started).total_seconds()
+            except (TypeError, ValueError):
+                pass
+        progress["stats"] = stats
+    return progress
 
 
 def save_job_progress(working_dir: Path, job_state: dict) -> None:
@@ -264,14 +290,15 @@ def _process_pages(
                 resume=resume,
                 system_prompt=system_prompt,
             )
+            result = page_progress(pipeline.get_page_status(page_id))
             if success:
-                result = {"status": "complete"}
                 logger.info(f"✓ {page_id} completed")
             else:
-                result = page_progress(pipeline.get_page_status(page_id))
                 logger.warning(f"✗ {page_id} failed")
         except KeyboardInterrupt:
-            update_progress(page_number, {"status": "error", "error": "Interrupted"})
+            result = page_progress(pipeline.get_page_status(page_id))
+            result.update(status="error", error="Interrupted")
+            update_progress(page_number, result)
             raise
         except Exception as error:
             result = {"status": "error", "error": str(error)}
@@ -318,11 +345,31 @@ def _process_pages(
         for page_id in (f"page_{number:06d}" for number in range(start_page, end_page + 1))
     )
     logger.info("SF005: Exporting PDF, text, and Markdown")
+    export_state = {"status": "progress", "stats": {"started_at": job.now()}}
+    job_state["data"]["sf005"] = export_state
+    started = time.monotonic()
+    job.save(pipeline.working_dir, pipeline.job_id, job_state)
     try:
         output_pdf = export_translated_pages(html_pages, phase_dir, f"{input_pdf.stem}jpn.pdf")
-    except (OSError, RuntimeError, ValueError) as error:
+        export_state.update(status="complete", outputs={
+            "pdf": str(output_pdf.relative_to(pipeline.job_dir)),
+            "text": "SF005/text",
+            "md_en": "SF005/md_en",
+            "md_jp": "SF005/md_jp",
+        })
+    except KeyboardInterrupt:
+        export_state.update(status="error", error="Interrupted")
+        raise
+    except Exception as error:
+        export_state.update(status="error", error=str(error))
         logger.error("SF005: Export failed: %s", error)
         return 1
+    finally:
+        export_state["stats"].update(
+            finished_at=job.now(),
+            duration_sec=time.monotonic() - started,
+        )
+        job.save(pipeline.working_dir, pipeline.job_id, job_state)
     logger.info("SF005: Saved %s", output_pdf)
     logger.info("SF005: Saved page text in %s", phase_dir / "text")
     logger.info("SF005: Saved original and translated Markdown in %s and %s", phase_dir / "md_en", phase_dir / "md_jp")
