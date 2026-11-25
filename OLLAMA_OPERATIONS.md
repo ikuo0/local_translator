@@ -12,6 +12,10 @@ docker compose exec ollama ollama pull qwen3:8b
 docker compose exec ollama ollama run qwen3:8b
 docker compose exec ollama ollama ps
 docker compose logs --tail=20 ollama
+
+# コンテナの停止と状態確認
+docker compose stop ollama
+docker compose ps -a
 ```
 
 コンテナの再起動は `docker compose restart ollama` で行います。`docker-compose.yml` の環境変数を変更した場合は、ジョブ終了後に `docker compose up -d ollama` で設定を反映します。全サービスを停止する `docker compose down` は Dev Container も停止します。
