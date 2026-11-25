@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SR1200 自由問い合わせ</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="conversation.js" defer></script>
+</head>
+<body>
+<main>
+    <a href="/">機能一覧</a>
+    <h1>自由問い合わせ</h1>
+    <form id="question-form">
+        <div class="options">
+            <label><input id="keep-history" type="checkbox"> 会話の履歴を引き継ぐ</label>
+            <button id="clear-history" class="secondary" type="button" disabled>履歴を消去</button>
+        </div>
+        <label class="question-label" for="question">質問</label>
+        <textarea id="question" required></textarea>
+        <button id="submit" type="submit">送信</button>
+        <p id="status" role="status"></p>
+    </form>
+    <section id="messages" aria-label="質問と回答"></section>
+</main>
+</body>
+</html>
