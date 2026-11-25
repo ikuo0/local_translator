@@ -110,7 +110,10 @@ python -m impl_translator.src.features.SR1000.sr1000_main \
 | `--start-page N` / `--end-page N` | 1始まりの開始・終了ページ。両端を含む。新規実行で省略すると全ページ、再開時に省略すると保存済みの範囲を使う。 |
 | `--system-prompt TEXT` | 各翻訳リクエストに与える補足。例は `--system-prompt "ODB++、ガーバーデータ関連の翻訳です"`。再開時は省略すると保存済みの値を使う。 |
 | `--resume --job-id ID` | 指定したジョブの完了済みページを再利用し、残りを処理する。2つのオプションを併用。 |
+| `--export-with-fallback` | 失敗ページを原文で補い、PDF・Markdown・テキストを出力する。省略時は、失敗ページが1件でもあれば最終出力を生成しない。 |
 | `--debug-ollama-cache` | 翻訳前に Ollama のキャッシュ計測用リクエストを送る。[計測値の読み方](OLLAMA_OPERATIONS.md#翻訳ジョブのキャッシュ診断) |
+
+`--export-with-fallback` を指定しても、失敗ページは `--resume` の再翻訳対象です。原文で補ったページ番号は `job.yaml` の `data.sf005.fallback_pages` に記録され、コマンドの終了コードは `1` です。
 
 ## 3. ジョブの経過を確認する
 
@@ -128,6 +131,36 @@ watch -n 3 python -m impl_translator.src.features.SR1001.batch status \
 
 `watch -n 3` を外すと1回だけ表示します。ブラウザーでの確認方法は [SR1001 GUI](JOB_MONITORING.md#sr1001-gui) を参照してください。ログを追う場合は `tail -f "$WORK_DIR/$JOB_ID/log.txt"` を使います。
 
+## 4. テキストを翻訳する（SR1100）
+
+Web UI は [Flask アプリの起動手順](JOB_MONITORING.md#sr1001-gui) と同じアプリから利用できます。ブラウザーで `/sr1100/` を開き、翻訳方向と原文を入力します。
+
+```bash
+python -m impl_translator.src.features.SR1100.batch \
+  --direction en-ja --text 'The surface consists of multiple polygons.'
+
+printf '%s\n' '複数の多角形で構成されます。' \
+  | python -m impl_translator.src.features.SR1100.batch --direction ja-en
+```
+
+CLI と Web UI は同じ翻訳処理を使います。翻訳リクエストごとに原文と翻訳方向を送り、Ollama の `keep_alive` は `0` を指定します。
+
+## 5. Ollama に質問する（SR1200）
+
+Flask アプリの `/sr1200/` を開きます。「会話の履歴を引き継ぐ」を有効にすると、同じタブ内の過去の質問と回答を次の問い合わせに含めます。履歴ありでは `keep_alive=30m`、履歴なしでは `keep_alive=0` を指定します。
+
+```bash
+python -m impl_translator.src.features.SR1200.batch --text 'PCBとは何ですか？'
+
+# 同じ JSON ファイルを指定して会話を続ける
+python -m impl_translator.src.features.SR1200.batch \
+  --history-file ./output/sr1200-history.json --text 'PCBとは何ですか？'
+python -m impl_translator.src.features.SR1200.batch \
+  --history-file ./output/sr1200-history.json --text '先ほどの説明を一文にまとめて'
+```
+
+履歴ありのコンテキスト上限は既定で 32,768 トークンです。Web API は Flask 起動時の `SR1200_CONTEXT_TOKENS` 環境変数、CLI は `--context-tokens` で変更できます。Ollama のチャット API で入力トークン数を測り、回答枠を確保するために古い質問と回答から順に除外します。[Ollama チャット API](https://docs.ollama.com/api/chat)
+
 ## 関連資料
 
 - [機能と処理の概要](impl_translator/src/overview.md)
@@ -135,3 +168,18 @@ watch -n 3 python -m impl_translator.src.features.SR1001.batch status \
 - [ジョブの詳細確認と SR1001 GUI](JOB_MONITORING.md)
 - [変換・翻訳ツールの単体実行](TRANSLATION_TOOLS.md)
 - [PDFMathTranslate-next の使い方](PDFMATH_TRANSLATE.md)
+
+## ローカルで AI を利用する
+
+Ollama の起動後、Dev Container 内のターミナルで `app.py` を起動します。
+
+```bash
+cd /workspace
+PYTHONPATH=/workspace python impl_translator/src/app/app.py
+```
+
+VS Code の「ポート」ビューでコンテナのポート `5000` を転送し、Windows のブラウザーで開きます。別のローカルポートが割り当てられた場合は、ビューに表示されたポートを使います。
+
+- [機能一覧](http://localhost:5000/)
+- [テキスト翻訳（SR1100）](http://localhost:5000/sr1100/)
+- [Ollama への質問（SR1200）](http://localhost:5000/sr1200/)

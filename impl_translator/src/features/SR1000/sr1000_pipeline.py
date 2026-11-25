@@ -284,6 +284,7 @@ class SR1000Pipeline:
 
     def export_job(
         self, input_pdf: Path, start_page: int, end_page: int, job_state: dict,
+        fallback_pages: list[int] | None = None,
     ) -> bool:
         """Run SF005 and persist the export result in the job state."""
         phase_dir = self.job_dir / "SF005"
@@ -300,13 +301,18 @@ class SR1000Pipeline:
         started = time.monotonic()
         job.save(self.working_dir, self.job_id, job_state)
         try:
-            output_pdf = sf005.export_translated_pages(html_pages, phase_dir, f"{input_pdf.stem}jpn.pdf")
+            output_pdf = sf005.export_translated_pages(
+                html_pages, phase_dir, f"{input_pdf.stem}jpn.pdf",
+                source_pdf=input_pdf, fallback_pages=fallback_pages,
+            )
             export_state.update(status="complete", outputs={
                 "pdf": str(output_pdf.relative_to(self.job_dir)),
                 "text": "SF005/text",
                 "md_en": "SF005/md_en",
                 "md_jp": "SF005/md_jp",
             })
+            if fallback_pages:
+                export_state["fallback_pages"] = fallback_pages
         except KeyboardInterrupt:
             export_state.update(status="error", error="Interrupted")
             raise

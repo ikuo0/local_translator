@@ -59,6 +59,7 @@ def translate_pdf(
     debug_ollama_cache: bool = False,
     parallel_count: int = 1,
     system_prompt: str | None = None,
+    export_with_fallback: bool = False,
 ) -> int:
     """
     Translate a PDF document page by page.
@@ -76,6 +77,7 @@ def translate_pdf(
         debug_ollama_cache: Send a diagnostic request before processing pages
         parallel_count: Maximum number of concurrent page workers
         system_prompt: Extra translation context, reused on resume if omitted
+        export_with_fallback: Export with source pages where translation failed
 
     Returns:
         0 if successful, 1 if any page failed
@@ -188,7 +190,7 @@ def translate_pdf(
             return _process_pages(
                 pipeline, logger, input_pdf, start_page, end_page,
                 ollama_host, ollama_model, temperature, resume, job_state, parallel_count,
-                system_prompt,
+                system_prompt, export_with_fallback,
             )
     except (OSError, RuntimeError, ValueError) as error:
         logger.error("Unable to use SR1000 job %s: %s", job_id, error)
@@ -250,6 +252,7 @@ def _process_pages(
     job_state: dict,
     parallel_count: int,
     system_prompt: str | None,
+    export_with_fallback: bool = False,
 ) -> int:
     pages = job_state["data"]["pages"]
     progress_lock = Lock()
@@ -324,12 +327,16 @@ def _process_pages(
 
     if failed_pages:
         logger.warning(f"Failed pages: {failed_pages}")
-        return 1
-    if completed_count != len(pages):
-        logger.error("SF005: Export requires all selected pages to be complete")
+        if not export_with_fallback:
+            return 1
+    if completed_count + len(failed_pages) != len(pages):
+        logger.error("SF005: Export requires all selected pages to finish processing")
         return 1
 
-    if not pipeline.export_job(input_pdf, start_page, end_page, job_state):
+    if not pipeline.export_job(input_pdf, start_page, end_page, job_state, failed_pages):
+        return 1
+    if failed_pages:
+        logger.warning("SF005: Exported with original pages %s", failed_pages)
         return 1
     logger.info("All pages processed successfully!")
     return 0
@@ -417,6 +424,11 @@ def main():
         "--system-prompt",
         help="Extra context for each translation request (reuses the saved value on resume)",
     )
+    parser.add_argument(
+        "--export-with-fallback",
+        action="store_true",
+        help="Export final files with original pages in place of failed translations",
+    )
 
     args = parser.parse_args()
     if args.parallel_count < 1:
@@ -437,6 +449,7 @@ def main():
         debug_ollama_cache=args.debug_ollama_cache,
         parallel_count=args.parallel_count,
         system_prompt=args.system_prompt,
+        export_with_fallback=args.export_with_fallback,
     )
 
     sys.exit(exit_code)

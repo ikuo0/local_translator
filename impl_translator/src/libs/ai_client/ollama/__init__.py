@@ -44,6 +44,7 @@ class OllamaClient:
         think: Optional[bool] = None,
         log_cache_metrics: bool = False,
         repeat_penalty: float = 1.0,
+        output_schema: Optional[dict] = None,
     ) -> str:
         """
         Generate text using Ollama.
@@ -57,6 +58,7 @@ class OllamaClient:
             think: Whether to enable thinking (None uses the model default)
             log_cache_metrics: Log cache metrics for a nonstreaming diagnostic request
             repeat_penalty: Initial repetition penalty. Increases by 0.1 per token-repeat retry.
+            output_schema: Optional JSON Schema for structured output.
 
         Returns:
             Generated text response
@@ -85,6 +87,9 @@ class OllamaClient:
 
         if keep_alive:
             payload["keep_alive"] = keep_alive
+
+        if output_schema is not None:
+            payload["format"] = output_schema
 
         for attempt in range(_TOKEN_REPEAT_RETRIES + 1):
             response = requests.post(url, json=payload, timeout=self.timeout)

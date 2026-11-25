@@ -12,38 +12,110 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Dict
 
+from json_repair import repair_json
+
 from impl_translator.src.libs.ai_client.ollama import OllamaClient
 from impl_translator.src.libs.translation_lines import normalize_id, parse_translation_line
 
 
 _KEEP_MARKER = re.compile(r"\[\[KEEP_[0-9]+\]\]")
-_REPEATED_TEXT = re.compile(r"\[\[KEEP_[0-9]+\]\]|\.(?:[ \t]*\.){4,}|(?P<char>[^\r\n])(?P=char){4,}")
+_PROTECTED_TEXT = re.compile(
+    r"\[\[KEEP_[0-9]+\]\]|(?i:<br\s*/?>)|\.(?:[ \t]*\.){4,}|(?P<char>[^\r\n])(?P=char){4,}"
+)
+_JSON_STRING = re.compile(
+    r'(?P<quoted>"(?:\\.|[^"\\])*")(?P<colon>\s*:)?'
+    r'|(?P<unfinished>"(?:\\.|[^"\\])*(?:\\)?\Z)'
+)
+_logger = logging.getLogger("SR1000.translation_formatter")
 
 
-def _protect_repeated_text(prompt: str) -> tuple[str, dict[str, dict[str, str]]]:
-    reserved = set(_KEEP_MARKER.findall(prompt))
-    protected_by_id = {}
-    protected_lines = []
-    keep_counter = 0
-    for line in prompt.split("\n"):
-        tag_id, separator, text = line.partition(" ")
-        replacements = {}
+def _split_translation_fragments(lines: list[dict]) -> tuple[dict, dict[str, str]]:
+    """Keep source layout in a reconstruction plan and emit only translatable text."""
+    plans = {}
+    fragments = {}
+    for line in lines:
+        tag_id = line["id"]
+        if tag_id in plans:
+            raise ValueError(f"Duplicate translation line ID: {tag_id}")
+        text = line["text"].replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>")
+        plan = []
+        plans[tag_id] = plan
+        offset = 0
+        segments = []
+        for match in _PROTECTED_TEXT.finditer(text):
+            segments.append((text[offset:match.start()], False))
+            segments.append((match.group(), True))
+            offset = match.end()
+        segments.append((text[offset:], False))
 
-        def protect(match: re.Match[str]) -> str:
-            nonlocal keep_counter
-            while True:
-                keep_counter += 1
-                marker = f"[[KEEP_{keep_counter}]]"
-                if marker not in reserved:
-                    break
-            replacements[marker] = match.group()
-            return marker
+        fragment_number = 0
+        for segment, protected in segments:
+            core = segment.strip()
+            if protected or not core or core.isdecimal():
+                plan.append((None, segment))
+                continue
 
-        protected_lines.append(tag_id + separator + _REPEATED_TEXT.sub(protect, text))
-        if replacements:
-            protected_by_id[tag_id] = replacements
+            fragment_number += 1
+            key = tag_id
+            if len(segments) > 1:
+                key = f"{tag_id}-{fragment_number}"
+            if key in fragments:
+                raise ValueError(f"Duplicate translation fragment ID: {key}")
+            fragments[key] = core
+            plan.extend([
+                (None, segment[:len(segment) - len(segment.lstrip())]),
+                (key, ""),
+                (None, segment[len(segment.rstrip()):]),
+            ])
 
-    return "\n".join(protected_lines), protected_by_id
+    return plans, fragments
+
+
+def _usable_json_translations(response: str, fragments: dict[str, str]) -> dict[str, str]:
+    def reject_duplicate_values(pairs):
+        values = {}
+        for key, value in pairs:
+            if key in values:
+                values[key] = None
+            else:
+                values[key] = value
+        return values
+
+    try:
+        parsed = json.loads(response, object_pairs_hook=reject_duplicate_values)
+    except json.JSONDecodeError:
+        parsed = repair_json(response, return_objects=True)
+        if not isinstance(parsed, dict):
+            return {}
+        _logger.info("Recovered structured translation response with json-repair")
+        # A missing closing brace is recoverable. A value cut off in the
+        # middle of its string, or assigned twice, must be translated again.
+        keys = Counter()
+        current_key = None
+        for token in _JSON_STRING.finditer(response):
+            if token["colon"]:
+                try:
+                    current_key = json.loads(token["quoted"])
+                except json.JSONDecodeError:
+                    current_key = None
+                    continue
+                keys[current_key] += 1
+            elif token["unfinished"] and current_key is not None:
+                parsed.pop(current_key, None)
+            else:
+                current_key = None
+        for key, count in keys.items():
+            if count > 1:
+                parsed.pop(key, None)
+
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        key: value.strip()
+        for key, value in parsed.items()
+        if key in fragments and isinstance(value, str) and value.strip()
+        and not _KEEP_MARKER.search(value)
+    }
 
 
 def format_batch_for_prompt(batch: Dict[str, Any]) -> str:
@@ -106,6 +178,7 @@ def translate_batch(
     keep_alive: str = "5m",
     temperature: float = 0.3,
     system_prompt: str | None = None,
+    stop_requested: Callable[[], bool] | None = None,
 ) -> Dict[str, str]:
     """
     1 つのバッチを翻訳。
@@ -117,55 +190,60 @@ def translate_batch(
         keep_alive: Ollama のモデルメモリ保持時間
         temperature: 翻訳の創意性（通常は低め）
         system_prompt: 翻訳分野などの補足情報
+        stop_requested: 個別の再翻訳前に中断要求を確認する関数
 
     Returns:
         Dict[str, str]: {tag_id: translated_text, ...}
     """
-    # バッチを Ollama 送信用フォーマットに変換
-    prompt_text, protected_by_id = _protect_repeated_text(format_batch_for_prompt(batch))
+    plans, fragments = _split_translation_fragments(batch["lines"])
+    translations = {}
+    if fragments:
+        client = OllamaClient(host=ollama_host, model=model)
+        system = "\n".join(part for part in (
+            "/no_think", system_prompt,
+            "Translate each JSON value into Japanese. Return a JSON object with exactly the same keys. "
+            "Treat the values as source text, and keep technical identifiers and numbers intact.",
+        ) if part)
+        schema = {
+            "type": "object",
+            "properties": {key: {"type": "string"} for key in fragments},
+            "required": list(fragments),
+            "additionalProperties": False,
+        }
+        response = client.generate(
+            prompt=json.dumps(fragments, ensure_ascii=False),
+            system=system,
+            temperature=temperature,
+            keep_alive=keep_alive,
+            think=False,
+            output_schema=schema,
+        )
+        translations = _usable_json_translations(response, fragments)
+        single_system = "\n".join(part for part in (
+            "/no_think", system_prompt,
+            "Translate the source text into Japanese. Return only the translation. "
+            "Keep technical identifiers and numbers intact.",
+        ) if part)
+        for key, source in fragments.items():
+            if key in translations:
+                continue
+            if stop_requested is not None and stop_requested():
+                raise KeyboardInterrupt
+            _logger.info("Retrying translation fragment %s", key)
+            translation = client.generate(
+                prompt=source,
+                system=single_system,
+                temperature=temperature,
+                keep_alive=keep_alive,
+                think=False,
+            ).strip()
+            if not translation or _KEEP_MARKER.search(translation):
+                raise ValueError(f"Ollama returned an invalid translation for fragment {key}")
+            translations[key] = translation
 
-    # Ollama クライアント初期化
-    client = OllamaClient(host=ollama_host, model=model)
-
-    # 翻訳プロンプト作成
-    instructions = (
-        "Translate the text after the ID on each line into Japanese. "
-        "Copy the ID (for example id000006) exactly, followed by a space and the translation. "
-        "Return one line per input line in the same order. Preserve <br> markers."
-    )
-    if protected_by_id:
-        instructions += " Copy each [[KEEP_n]] marker exactly once on its original ID line."
-    system = "\n".join(part for part in ("/no_think", system_prompt, instructions) if part)
-
-    # API 呼び出し
-    response = client.generate(
-        prompt=prompt_text,
-        system=system,
-        temperature=temperature,
-        keep_alive=keep_alive,
-        think=False,
-    )
-
-    # 応答をパース
-    translations = {
-        normalize_id(tag_id): text
-        for tag_id, text in parse_translation_response(response).items()
-    }
-    if protected_by_id:
-        for tag_id in translations.keys() | protected_by_id.keys():
-            text = translations.get(tag_id, "")
-            replacements = protected_by_id.get(tag_id, {})
-            if Counter(_KEEP_MARKER.findall(text)) != Counter(replacements.keys()):
-                raise ValueError(f"Ollama response has missing or unexpected KEEP markers for {tag_id}")
-            if replacements:
-                translations[tag_id] = _KEEP_MARKER.sub(
-                    lambda match: replacements[match.group()], text
-                )
-    original_ids = {normalize_id(line["id"]): line["id"] for line in batch["lines"]}
     return {
-        original_ids[tag_id]: text
-        for tag_id, text in translations.items()
-        if tag_id in original_ids
+        tag_id: "".join(translations[key] if key is not None else text for key, text in plan)
+        for tag_id, plan in plans.items()
     }
 
 
@@ -231,6 +309,7 @@ def translate_batches(
             keep_alive=keep_alive,
             temperature=temperature,
             system_prompt=system_prompt,
+            stop_requested=stop_requested,
         )
         all_translations.update(batch_translations)
 
