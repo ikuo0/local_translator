@@ -7,14 +7,13 @@ batch_splitter, translation_formatter, translation_restorer)
 import argparse
 import logging
 import sys
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
 
-from impl_translator.src.features.SR1000.sf005_pdf import export_translated_pages
-from impl_translator.src.features.SR1000.sr1000_pipeline import PDF_LOCK, SR1000Pipeline
+from impl_translator.src.features.SR1000 import sf001
+from impl_translator.src.features.SR1000.sr1000_pipeline import SR1000Pipeline
 from impl_translator.src.libs import job
 from impl_translator.src.libs.ai_client.ollama import OllamaClient
 
@@ -102,12 +101,8 @@ def translate_pdf(
         logger.error(f"Input PDF not found: {input_pdf}")
         return 1
 
-    # Import pymupdf to get page count
     try:
-        import pymupdf
-
-        with PDF_LOCK, pymupdf.open(input_pdf) as pdf:
-            page_count = len(pdf)
+        page_count = sf001.count_pages(input_pdf)
     except Exception as e:
         logger.error(f"Failed to read PDF: {e}")
         return 1
@@ -336,43 +331,8 @@ def _process_pages(
         logger.error("SF005: Export requires all selected pages to be complete")
         return 1
 
-    phase_dir = pipeline.job_dir / "SF005"
-    html_pages = (
-        (
-            pipeline.job_dir / "SF001_to_html" / page_id / "page.html",
-            pipeline.job_dir / "SF004_restore" / page_id / "translated.html",
-        )
-        for page_id in (f"page_{number:06d}" for number in range(start_page, end_page + 1))
-    )
-    logger.info("SF005: Exporting PDF, text, and Markdown")
-    export_state = {"status": "progress", "stats": {"started_at": job.now()}}
-    job_state["data"]["sf005"] = export_state
-    started = time.monotonic()
-    job.save(pipeline.working_dir, pipeline.job_id, job_state)
-    try:
-        output_pdf = export_translated_pages(html_pages, phase_dir, f"{input_pdf.stem}jpn.pdf")
-        export_state.update(status="complete", outputs={
-            "pdf": str(output_pdf.relative_to(pipeline.job_dir)),
-            "text": "SF005/text",
-            "md_en": "SF005/md_en",
-            "md_jp": "SF005/md_jp",
-        })
-    except KeyboardInterrupt:
-        export_state.update(status="error", error="Interrupted")
-        raise
-    except Exception as error:
-        export_state.update(status="error", error=str(error))
-        logger.error("SF005: Export failed: %s", error)
+    if not pipeline.export_job(input_pdf, start_page, end_page, job_state):
         return 1
-    finally:
-        export_state["stats"].update(
-            finished_at=job.now(),
-            duration_sec=time.monotonic() - started,
-        )
-        job.save(pipeline.working_dir, pipeline.job_id, job_state)
-    logger.info("SF005: Saved %s", output_pdf)
-    logger.info("SF005: Saved page text in %s", phase_dir / "text")
-    logger.info("SF005: Saved original and translated Markdown in %s and %s", phase_dir / "md_en", phase_dir / "md_jp")
     logger.info("All pages processed successfully!")
     return 0
 

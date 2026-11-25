@@ -5,6 +5,7 @@ batch_splitter の JSON バッチを受け取り、Ollama で翻訳し、翻訳�
 """
 
 import json
+import logging
 import re
 from collections import Counter
 from collections.abc import Callable
@@ -215,7 +216,11 @@ def translate_batches(
         # 進捗表示
         log_msg = f"[{idx + 1}/{total_batches}] Batch {batch['batch_id']} を翻訳中..."
         if page_id and logger:
-            logger._log("info", f"[{page_id}] SF003-3: Batch {idx + 1}/{total_batches}")
+            message = f"[{page_id}] SF003-3: Batch {idx + 1}/{total_batches}"
+            if isinstance(logger, (logging.Logger, logging.LoggerAdapter)):
+                logger.info(message)
+            else:
+                logger._log("info", message)
         else:
             print(log_msg)
         

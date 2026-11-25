@@ -1,6 +1,6 @@
 """
 SR1000 Pipeline: PDF to Japanese HTML/PDF translation
-Orchestrates SF001-SF004 steps with progress management.
+Orchestrates SF001-SF005 with progress management.
 """
 
 import json
@@ -12,16 +12,8 @@ from pathlib import Path
 from threading import Event, Lock
 from typing import Any, Dict, Optional
 
-from impl_translator.src.libs.batch_splitter import split_text_into_batches
-from impl_translator.src.libs.docling_converter import convert_pdf_to_html
-from impl_translator.src.libs.html_preproc import preprocess_html
-from impl_translator.src.libs.html_text_extractor import extract_tag_text, format_as_text_lines
+from impl_translator.src.features.SR1000 import sf001, sf002, sf003, sf004, sf005
 from impl_translator.src.libs import job
-from impl_translator.src.libs.translation_formatter import translate_batches
-from impl_translator.src.libs.translation_restorer import restore_translations_to_html
-
-
-PDF_LOCK = Lock()
 
 
 class SR1000Pipeline:
@@ -35,6 +27,7 @@ class SR1000Pipeline:
     SF003-2: テキスト → 1500文字バッチ化
     SF003-3: バッチ → Ollama で翻訳
     SF004: 翻訳 → HTML復元
+    SF005: PDF・テキスト・Markdown出力
     """
 
     def __init__(
@@ -202,38 +195,7 @@ class SR1000Pipeline:
             )
             with self._track_step(page_id, state, "sf001") as finish:
                 sf001_dir = self._get_phase_dir(page_id, "SF001_to_html")
-                html_file = sf001_dir / "page.html"
-
-                # Note: docling_converter expects full PDF, we extract single page
-                # Using pymupdf to extract page first
-                import pymupdf
-
-                with PDF_LOCK, pymupdf.open(input_pdf) as pdf:
-                    if page_number > len(pdf):
-                        raise ValueError(f"Page {page_number} out of range")
-
-                    # Extract single page as temporary PDF
-                    temp_pdf = sf001_dir / "temp_page.pdf"
-                    with pymupdf.open() as single_page_doc:
-                        single_page_doc.insert_pdf(pdf, from_page=page_number - 1, to_page=page_number - 1)
-                        single_page_doc.save(temp_pdf)
-
-                # Convert to HTML
-                convert_pdf_to_html(
-                    input_pdf=temp_pdf,
-                    output_dir=sf001_dir / "work",
-                    split_pages=False,  # Already single page
-                )
-
-                # Find generated HTML (output name is based on input PDF stem)
-                # With split_pages=False, it creates temp_page.html in output_dir
-                html_work_file = sf001_dir / "work" / "temp_page.html"
-                if not html_work_file.exists():
-                    raise FileNotFoundError(f"No HTML generated from PDF at {html_work_file}")
-
-                html_file.write_text(html_work_file.read_text(encoding="utf-8"), encoding="utf-8")
-                temp_pdf.unlink()
-                html_work_file.unlink()
+                html_file = sf001.convert_page_to_html(input_pdf, page_number, sf001_dir)
 
                 finish()
                 duration = state["steps"]["sf001"]["stats"]["duration_sec"]
@@ -250,12 +212,7 @@ class SR1000Pipeline:
             )
             with self._track_step(page_id, state, "sf002") as finish:
                 sf002_dir = self._get_phase_dir(page_id, "SF002_preproc")
-                html_preproc_file = sf002_dir / "preproc.html"
-
-                preprocess_html(
-                    input_html=html_file,
-                    output_html=html_preproc_file,
-                )
+                html_preproc_file = sf002.prepare_html(html_file, sf002_dir)
 
                 finish()
                 duration = state["steps"]["sf002"]["stats"]["duration_sec"]
@@ -273,37 +230,18 @@ class SR1000Pipeline:
             with self._track_step(page_id, state, "sf003") as finish:
                 sf003_dir = self._get_phase_dir(page_id, "SF003_translate")
 
-                # SF003-1: Extract text
-                text_lines = extract_tag_text(html_preproc_file)
-                text_file = sf003_dir / "extracted.txt"
-                text_file.write_text(format_as_text_lines(text_lines), encoding="utf-8")
-                self._log("info", f"[{page_id}] SF003-1: Extracted {len(text_lines)} tags")
-
-                # SF003-2: Split into batches
-                batches = split_text_into_batches(text_file, max_chars=1500)
-                batches_file = sf003_dir / "batches.json"
-                with open(batches_file, "w", encoding="utf-8") as f:
-                    json.dump(batches, f, ensure_ascii=False, indent=2)
-                self._log("info", f"[{page_id}] SF003-2: Split into {len(batches)} batches")
-
-                # SF003-3: Translate batches
-                translations_file = sf003_dir / "translations.json"
-                self._log("info", f"[{page_id}] SF003-3: Translating {len(batches)} batches...")
-                with self._ollama_lock:
-                    if self.stop_requested.is_set():
-                        raise KeyboardInterrupt
-                    translate_batches(
-                        input_batches_json=batches_file,
-                        output_translations_json=translations_file,
-                        ollama_host=ollama_host,
-                        model=ollama_model,
-                        temperature=temperature,
-                        page_id=page_id,
-                        logger=self,
-                        stop_requested=self.stop_requested.is_set,
-                        system_prompt=system_prompt,
-                    )
-                self._log("info", f"[{page_id}] SF003-3: All {len(batches)} batches translated")
+                translations_file = sf003.translate_page(
+                    html_preproc_file,
+                    sf003_dir,
+                    page_id=page_id,
+                    ollama_host=ollama_host,
+                    model=ollama_model,
+                    temperature=temperature,
+                    system_prompt=system_prompt,
+                    logger=self.logger,
+                    ollama_lock=self._ollama_lock,
+                    stop_requested=self.stop_requested,
+                )
 
                 finish()
                 duration = state["steps"]["sf003"]["stats"]["duration_sec"]
@@ -320,12 +258,8 @@ class SR1000Pipeline:
             )
             with self._track_step(page_id, state, "sf004") as finish:
                 sf004_dir = self._get_phase_dir(page_id, "SF004_restore")
-                html_translated_file = sf004_dir / "translated.html"
-
-                restore_translations_to_html(
-                    input_html=html_preproc_file,
-                    translations_json=translations_file,
-                    output_html=html_translated_file,
+                html_translated_file = sf004.restore_page_html(
+                    html_preproc_file, translations_file, sf004_dir,
                 )
 
                 finish()
@@ -348,6 +282,49 @@ class SR1000Pipeline:
             self._save_page_state(page_id, state)
             self._log("error", f"[{page_id}] Processing failed: {e}")
             return False
+
+    def export_job(
+        self, input_pdf: Path, start_page: int, end_page: int, job_state: dict,
+    ) -> bool:
+        """Run SF005 and persist the export result in the job state."""
+        phase_dir = self.job_dir / "SF005"
+        html_pages = (
+            (
+                self.job_dir / "SF001_to_html" / page_id / "page.html",
+                self.job_dir / "SF004_restore" / page_id / "translated.html",
+            )
+            for page_id in (f"page_{number:06d}" for number in range(start_page, end_page + 1))
+        )
+        self.logger.info("SF005: Exporting PDF, text, and Markdown")
+        export_state = {"status": "progress", "stats": {"started_at": job.now()}}
+        job_state["data"]["sf005"] = export_state
+        started = time.monotonic()
+        job.save(self.working_dir, self.job_id, job_state)
+        try:
+            output_pdf = sf005.export_translated_pages(html_pages, phase_dir, f"{input_pdf.stem}jpn.pdf")
+            export_state.update(status="complete", outputs={
+                "pdf": str(output_pdf.relative_to(self.job_dir)),
+                "text": "SF005/text",
+                "md_en": "SF005/md_en",
+                "md_jp": "SF005/md_jp",
+            })
+        except KeyboardInterrupt:
+            export_state.update(status="error", error="Interrupted")
+            raise
+        except Exception as error:
+            export_state.update(status="error", error=str(error))
+            self.logger.error("SF005: Export failed: %s", error)
+            return False
+        finally:
+            export_state["stats"].update(
+                finished_at=job.now(),
+                duration_sec=time.monotonic() - started,
+            )
+            job.save(self.working_dir, self.job_id, job_state)
+        self.logger.info("SF005: Saved %s", output_pdf)
+        self.logger.info("SF005: Saved page text in %s", phase_dir / "text")
+        self.logger.info("SF005: Saved original and translated Markdown in %s and %s", phase_dir / "md_en", phase_dir / "md_jp")
+        return True
 
     def get_page_status(self, page_id: str) -> Dict[str, Any]:
         """Get current status of a page."""
