@@ -203,7 +203,6 @@ if __name__ == "__main__":
         print("  python -m impl_translator.src.features.SR1000.sr1000_main \\")
         print("    --input-pdf input.pdf \\")
         print("    --working-dir ./work \\")
-        print("    --log-file ./work/log.txt \\")
         print("    --ollama-host http://localhost:11434 \\")
         print("    --ollama-model qwen3:8b")
 

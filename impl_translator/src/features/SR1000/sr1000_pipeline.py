@@ -35,13 +35,12 @@ class SR1000Pipeline:
         working_dir: Path,
         logger: Optional[logging.Logger] = None,
         job_id: Optional[str] = None,
-        metadata_file: Optional[Path] = None,
     ):
         self.working_dir = Path(working_dir).resolve()
         self.job_id = job_id if job_id is not None else job.create(self.working_dir)
         self.job_dir = job.job_directory(self.working_dir, self.job_id)
         self.logger = logger or logging.getLogger("SR1000Pipeline")
-        self.metadata_file = Path(metadata_file) if metadata_file else self.job_dir / "metadata.json"
+        self.metadata_file = self.job_dir / "metadata.json"
         if not self.job_dir.is_dir():
             raise FileNotFoundError(f"Job does not exist: {self.job_id}")
         self.metadata = self._load_metadata()

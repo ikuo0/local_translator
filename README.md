@@ -37,6 +37,7 @@ curl -fsS http://ollama:11434/api/generate \
 `./input.pdf` を実際の PDF パスに置き換えます。初回は Docling のモデルを取得するため、処理開始まで時間がかかる場合があります。
 
 ```bash
+# 実行
 INPUT_PDF=./input.pdf
 WORK_DIR=./output/job
 
@@ -45,9 +46,24 @@ python -m impl_translator.src.features.SR1000.sr1000_main \
   --working-dir "$WORK_DIR" \
   --ollama-host http://ollama:11434 \
   --parallel-count 4
+
+# フルオプション実行
+# 新規実行用。再開用の --resume と --job-id は下の例を参照。
+python -m impl_translator.src.features.SR1000.sr1000_main \
+  --input-pdf "$INPUT_PDF" \
+  --working-dir "$WORK_DIR" \
+  --ollama-host http://ollama:11434 \
+  --ollama-model qwen3:8b \
+  --temperature 0.3 \
+  --parallel-count 4 \
+  --start-page 1 \
+  --end-page -1 \
+  --system-prompt "ODB++、ガーバーデータ関連の翻訳です" \
+  --debug-ollama-cache
 ```
 
 起動時に表示される `Job ID` を控えます。成果物は `$WORK_DIR/<job_id>/SF005/` に保存されます。
+ログは `$WORK_DIR/<job_id>/log.txt`、計測メタデータは `$WORK_DIR/<job_id>/metadata.json` に保存されます。ジョブ ID が決まる前の実行エラーは標準出力に表示されます。
 
 | フォルダ | 成果物 |
 | --- | --- |
@@ -84,8 +100,6 @@ python -m impl_translator.src.features.SR1000.sr1000_main \
 | `--start-page N` / `--end-page N` | 1始まりの開始・終了ページ。両端を含む。新規実行で省略すると全ページ、再開時に省略すると保存済みの範囲を使う。 |
 | `--system-prompt TEXT` | 各翻訳リクエストに与える補足。例は `--system-prompt "ODB++、ガーバーデータ関連の翻訳です"`。再開時は省略すると保存済みの値を使う。 |
 | `--resume --job-id ID` | 指定したジョブの完了済みページを再利用し、残りを処理する。2つのオプションを併用。 |
-| `--log-file PATH` | ログの出力先。既定は `<working-dir>/<job_id>/log.txt`。 |
-| `--metadata-file PATH` | 計測メタデータの出力先。既定は `<working-dir>/<job_id>/metadata.json`。 |
 | `--debug-ollama-cache` | 翻訳前に Ollama のキャッシュ計測用リクエストを送る。[計測値の読み方](OLLAMA_OPERATIONS.md#翻訳ジョブのキャッシュ診断) |
 
 ## 3. ジョブの経過を確認する
@@ -102,7 +116,7 @@ watch -n 3 python -m impl_translator.src.features.SR1001.batch status \
   --working-dir "$WORK_DIR" --job-id "$JOB_ID"
 ```
 
-`watch -n 3` を外すと1回だけ表示します。ブラウザーでの確認方法は [SR1001 GUI](JOB_MONITORING.md#sr1001-gui) を参照してください。ログを追う場合は `tail -f "$WORK_DIR/$JOB_ID/log.txt"` を使います。`--log-file` を指定した場合はそのファイルを開きます。
+`watch -n 3` を外すと1回だけ表示します。ブラウザーでの確認方法は [SR1001 GUI](JOB_MONITORING.md#sr1001-gui) を参照してください。ログを追う場合は `tail -f "$WORK_DIR/$JOB_ID/log.txt"` を使います。
 
 ## 関連資料
 

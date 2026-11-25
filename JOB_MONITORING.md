@@ -18,6 +18,8 @@ watch -n 3 python -m impl_translator.src.features.SR1001.batch status \
 
 `status --json` は Web UI の API と同じ項目を出力します。ページ別の状態、総処理時間、フェーズ別時間、エラーは `metrics` で確認できます。
 
+ページ処理中は、直近10分間の完了ペースから、実行中と未着手のページにかかる残り時間を概算します。完了記録が4件未満、または完了時刻の間隔が短すぎる間は数値を表示しません。失敗ページの再実行と SF005 の出力時間は見積もりの対象外です。`status --json` では `estimated_remaining_seconds` に秒数が入ります。
+
 ```bash
 # ページ別の計測値を JSON で表示
 python -m impl_translator.src.features.SR1001.batch metrics \
@@ -34,7 +36,7 @@ python -m impl_translator.src.features.SR1000.progress_monitor \
 
 `summary` と `metrics` は `--json` を指定できます。ページ処理時間の平均・最小・最大・合計は、計測値がある完了済みページが対象です。ジョブ経過時間は作成から最終更新までで、中断中の時間を含みます。並列処理ではページ時間の合計とジョブ経過時間が異なります。
 
-進捗モニターの `--filter` を省略すると全フェーズを表示し、`--no-follow` を加えると追尾せず終了します。表示は ✅ が完了、❌ が失敗、🔄 が処理中、⏳ が未処理です。ログ出力先を変更したジョブは、指定したログを `tail -f` で確認できます。
+進捗モニターの `--filter` を省略すると全フェーズを表示し、`--no-follow` を加えると追尾せず終了します。表示は ✅ が完了、❌ が失敗、🔄 が処理中、⏳ が未処理です。
 
 ## 保存される状態
 

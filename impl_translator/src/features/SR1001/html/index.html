@@ -49,6 +49,7 @@
                 <dt>進捗</dt><dd id="counts"></dd>
                 <dt>最終更新</dt><dd id="updated"></dd>
                 <dt>ジョブ経過時間</dt><dd id="elapsed"></dd>
+                <dt>ページ処理の残り時間</dt><dd id="remaining"></dd>
                 <dt>完了ページの計測</dt><dd id="timing"></dd>
             </dl>
             <progress id="progress" max="100" value="0" aria-label="完了ページの割合"></progress>
@@ -102,6 +103,10 @@
         element('progress').value = report.progress_percent;
         setText('updated', report.updated_at ? new Date(report.updated_at).toLocaleString() : '—');
         setText('elapsed', seconds(report.elapsed_seconds));
+        const remaining = report.estimated_remaining_seconds;
+        setText('remaining', Number.isFinite(remaining)
+            ? `約 ${Math.ceil(remaining / 60)} 分`
+            : report.running ? '計測中' : '—');
         const timing = report.summary;
         setText('timing', timing.timed_completed_pages
             ? `${timing.timed_completed_pages} ページ · 平均 ${seconds(timing.avg_elapsed_seconds)} · 最短 ${seconds(timing.min_elapsed_seconds)} · 最長 ${seconds(timing.max_elapsed_seconds)} · 合計 ${seconds(timing.total_elapsed_seconds)}`

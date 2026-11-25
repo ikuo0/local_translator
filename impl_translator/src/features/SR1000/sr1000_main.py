@@ -18,9 +18,8 @@ from impl_translator.src.libs import job
 from impl_translator.src.libs.ai_client.ollama import OllamaClient
 
 
-def setup_logging(log_file: Path) -> logging.Logger:
+def setup_logging(log_file: Path | None = None) -> logging.Logger:
     """Configure logging."""
-    log_file.parent.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("SR1000")
     logger.setLevel(logging.INFO)
     logger.propagate = False
@@ -30,13 +29,6 @@ def setup_logging(log_file: Path) -> logging.Logger:
         logger.removeHandler(handler)
         handler.close()
 
-    # File handler
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setFormatter(
-        logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-    )
-    logger.addHandler(file_handler)
-    
     # Console handler (for real-time display)
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(
@@ -44,19 +36,24 @@ def setup_logging(log_file: Path) -> logging.Logger:
     )
     logger.addHandler(console_handler)
 
+    if log_file is not None:
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+        )
+        logger.addHandler(file_handler)
+
     return logger
 
 
 def translate_pdf(
     input_pdf: Path,
     working_dir: Path,
-    log_file: Path | None = None,
     ollama_host: str = "http://localhost:11434",
     ollama_model: str = "qwen3:8b",
     temperature: float = 0.3,
     resume: bool = False,
     job_id: str | None = None,
-    metadata_file: Path = None,
     start_page: int = -1,
     end_page: int = -1,
     debug_ollama_cache: bool = False,
@@ -69,13 +66,11 @@ def translate_pdf(
     Args:
         input_pdf: Path to input PDF file
         working_dir: Working directory for intermediate files
-        log_file: Optional log path (defaults to log.txt in the job directory)
         ollama_host: Ollama host URL
         ollama_model: Ollama model name
         temperature: Translation temperature
         resume: Resume from previous progress
         job_id: Existing job ID when resuming
-        metadata_file: Path to metadata file for phase statistics
         start_page: Starting page number (1-indexed, -1 means 1)
         end_page: Ending page number (1-indexed, -1 means last page)
         debug_ollama_cache: Send a diagnostic request before processing pages
@@ -85,9 +80,13 @@ def translate_pdf(
     Returns:
         0 if successful, 1 if any page failed
     """
-    working_dir = working_dir.resolve()
-    input_pdf = input_pdf.resolve()
-    logger = logging.getLogger("SR1000")
+    logger = setup_logging()
+    try:
+        working_dir = working_dir.resolve()
+        input_pdf = input_pdf.resolve()
+    except (OSError, RuntimeError) as error:
+        logger.error("Unable to resolve input or working directory: %s", error)
+        return 1
 
     if parallel_count < 1:
         logger.error("--parallel-count must be at least 1")
@@ -135,6 +134,9 @@ def translate_pdf(
 
         with job.lock(working_dir, job_id):
             job_dir = job.job_directory(working_dir, job_id)
+            logger = setup_logging(job_dir / "log.txt")
+            logger.info("Job ID: %s", job_id)
+            logger.info("Job directory: %s", job_dir)
             job_state = job.load(working_dir, job_id)
             data = job_state["data"]
             saved_input = data.get("input_pdf")
@@ -156,9 +158,6 @@ def translate_pdf(
                 logger.error("Invalid page range: %s to %s", start_page, end_page)
                 return 1
 
-            logger = setup_logging(log_file or job_dir / "log.txt")
-            logger.info("Job ID: %s", job_id)
-            logger.info("Job directory: %s", job_dir)
             logger.info("Input PDF: %s", input_pdf)
             logger.info("Processing pages %s to %s out of %s", start_page, end_page, page_count)
 
@@ -166,7 +165,6 @@ def translate_pdf(
                 working_dir=working_dir,
                 logger=logger,
                 job_id=job_id,
-                metadata_file=metadata_file,
             )
             data["selection"] = {
                 "document_page_count": page_count,
@@ -337,8 +335,15 @@ def _process_pages(
     return 0
 
 
+class SR1000ArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stdout)
+        print(f"{self.prog}: error: {message}")
+        self.exit(2)
+
+
 def main():
-    parser = argparse.ArgumentParser(
+    parser = SR1000ArgumentParser(
         description="SR1000: Translate PDF to Japanese using Ollama"
     )
 
@@ -353,11 +358,6 @@ def main():
         type=Path,
         required=True,
         help="Working directory for intermediate files and state",
-    )
-    parser.add_argument(
-        "--log-file",
-        type=Path,
-        help="Log file path (default: working_dir/job_id/log.txt)",
     )
     parser.add_argument(
         "--ollama-host",
@@ -386,12 +386,6 @@ def main():
         "--job-id",
         type=str,
         help="Existing job ID to use with --resume",
-    )
-    parser.add_argument(
-        "--metadata-file",
-        type=Path,
-        default=None,
-        help="Path to metadata file for phase statistics (default: working_dir/job_id/metadata.json)",
     )
     parser.add_argument(
         "--start-page",
@@ -433,13 +427,11 @@ def main():
     exit_code = translate_pdf(
         input_pdf=args.input_pdf,
         working_dir=args.working_dir,
-        log_file=args.log_file,
         ollama_host=args.ollama_host,
         ollama_model=args.ollama_model,
         temperature=args.temperature,
         resume=args.resume,
         job_id=args.job_id,
-        metadata_file=args.metadata_file,
         start_page=args.start_page,
         end_page=args.end_page,
         debug_ollama_cache=args.debug_ollama_cache,

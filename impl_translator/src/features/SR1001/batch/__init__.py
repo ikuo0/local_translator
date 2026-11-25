@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -9,6 +10,30 @@ from pathlib import Path
 import yaml
 
 from impl_translator.src.features.SR1001 import summary
+
+
+def estimate_remaining_seconds(pages: dict, updated_at: str | None, remaining: int) -> float | None:
+    """Estimate remaining page work from recent observed completion throughput."""
+    if remaining <= 0:
+        return None
+
+    completion_ages = []
+    for page in pages.values():
+        if page["status"] == "completed":
+            finished_at = page.get("stats", {}).get("finished_at")
+            age = summary.elapsed_between(finished_at, updated_at)
+            if age is not None and age <= 600:
+                completion_ages.append(age)
+
+    if len(completion_ages) < 4:
+        return None
+
+    span = max(completion_ages) - min(completion_ages)
+    if span < 15:
+        return None
+    # The first completion starts the measurement interval. Include any time
+    # since the last completion through the most recent saved job update.
+    return round(remaining * max(completion_ages) / (len(completion_ages) - 1), 2)
 
 
 def load_report(working_dir: Path, job_id: str) -> dict:
@@ -33,6 +58,12 @@ def load_report(working_dir: Path, job_id: str) -> dict:
     else:
         status = data.get("status") or "pages_completed"
 
+    remaining_seconds = None
+    if metrics.running_pages:
+        remaining_seconds = estimate_remaining_seconds(
+            pages, state.get("updated_at"), metrics.running_pages + metrics.pending_pages,
+        )
+
     return {
         "job_id": job_id,
         "status": status,
@@ -46,6 +77,7 @@ def load_report(working_dir: Path, job_id: str) -> dict:
         "created_at": state.get("created_at"),
         "updated_at": state.get("updated_at"),
         "elapsed_seconds": data.get("elapsed_seconds"),
+        "estimated_remaining_seconds": remaining_seconds,
         "log_file": data.get("log_file"),
         "input_pdf": data.get("input_pdf"),
         "selection": data.get("selection"),
@@ -82,6 +114,11 @@ def format_status(report: dict) -> str:
         f"Failed: {report['failed']}  Interrupted: {report['interrupted']}",
         f"Updated: {report['updated_at'] or '-'}   Elapsed: {_seconds(report['elapsed_seconds'])}",
     ])
+    remaining = report["estimated_remaining_seconds"]
+    if remaining is not None:
+        lines.append(f"Estimated page time remaining: ~{math.ceil(remaining / 60)} min")
+    elif report["running"]:
+        lines.append("Estimated page time remaining: insufficient recent completions")
     metrics = report["summary"]
     if metrics["timed_completed_pages"]:
         lines.append(
